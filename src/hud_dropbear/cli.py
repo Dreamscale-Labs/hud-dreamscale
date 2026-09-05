@@ -18,7 +18,7 @@ from hud.settings import settings
 from hud.utils.platform import canonical_record_id
 
 from .agent import DropbearRobotAgent
-from .contract import ENV_NAME, MAX_STEPS, TASK_NAMES
+from .contract import ENV_NAME, MAX_STEPS, TASK_SUITES
 from .platform import verify_platform
 from .telemetry import CURRENT_TASK, Evidence
 from .video import export_videos
@@ -94,13 +94,15 @@ def startup_metrics(events):
     }
 
 
-def tasks(task_ids=(0, 1, 2), init_state_ids=(0, 1), *, max_steps=MAX_STEPS):
+def tasks(
+    task_ids=(0, 1, 2), init_state_ids=(0, 1), *, max_steps=MAX_STEPS, suite="libero_spatial"
+):
     return [
         Task(
             env=ENV_NAME,
-            id="libero_spatial",
+            id=suite,
             args={"task_id": tid, "init_state_id": sid, "seed": 0, "max_steps": max_steps},
-            columns={"task_name": TASK_NAMES[tid], "model": "molmoact2-libero"},
+            columns={"task_name": TASK_SUITES[suite][tid], "model": "molmoact2-libero"},
         )
         for tid in task_ids
         for sid in init_state_ids
@@ -143,7 +145,7 @@ async def evaluate(args):
         if not args.env_url:
             raise ValueError("--env-url is required for an already-running environment")
         runtime = Runtime(args.env_url)
-    rows = tasks(args.task_ids, args.init_state_ids, max_steps=args.max_steps)
+    rows = tasks(args.task_ids, args.init_state_ids, max_steps=args.max_steps, suite=args.suite)
     evidence = Evidence(args.output / "timings.jsonl", started=CLI_STARTED)
     previous_trace_dir = settings.telemetry_local_dir
     settings.telemetry_local_dir = str((args.output / "traces").resolve())
@@ -152,6 +154,7 @@ async def evaluate(args):
         evidence.emit(
             "job_start",
             runtime=args.runtime,
+            suite=args.suite,
             source=source_revision(),
             task_count=len(rows),
             max_steps=args.max_steps,
@@ -171,7 +174,7 @@ async def evaluate(args):
             },
         )
         async with DropbearRobotAgent(region=args.region, emit=evidence.emit) as agent:
-            job = await Taskset("dropbear-libero-demo", rows).run(
+            job = await Taskset(f"dropbear-{args.suite}-{args.runtime}", rows).run(
                 agent,
                 runtime=MeasuredRuntime(runtime, evidence.emit),
                 max_concurrent=1,
@@ -191,6 +194,9 @@ async def evaluate(args):
                 and summary["integration_errors"] == 0
                 and summary["successes"] >= 1
                 and args.runtime == "hud"
+                and args.suite == "libero_spatial"
+                and sorted(args.task_ids) == [0, 1, 2]
+                and sorted(args.init_state_ids) == [0, 1]
             )
         # Release billable inference before checking best-effort platform uploads.
         summary["videos"] = export_videos(args.output / "traces", args.output / "videos")
@@ -198,9 +204,7 @@ async def evaluate(args):
             summary["platform_evidence"] = await verify_platform(summary)
         else:
             summary["platform_evidence"] = {"verified": False, "reason": "telemetry_disabled"}
-        summary["demo_passed"] = (
-            summary["demo_passed"] and summary["platform_evidence"]["verified"]
-        )
+        summary["demo_passed"] = summary["demo_passed"] and summary["platform_evidence"]["verified"]
         summary["local_traces"] = "traces/"
         evidence.emit("job_result", **summary)
     except BaseException as exc:
@@ -220,8 +224,9 @@ def parser():
     p.add_argument("--runtime", choices=("docker", "hud", "attached"), default="docker")
     p.add_argument("--image", default="hud-dropbear-libero:local")
     p.add_argument("--env-url", help="HUD control URL for --runtime attached")
+    p.add_argument("--suite", choices=TASK_SUITES, default="libero_spatial")
     p.add_argument("--region", default="ap-southeast-2", choices=("ap-southeast-2", "us-west-2"))
-    p.add_argument("--task-ids", type=int, nargs="+", choices=range(3), default=[0, 1, 2])
+    p.add_argument("--task-ids", type=int, nargs="+", choices=range(10), default=[0, 1, 2])
     p.add_argument("--init-state-ids", type=int, nargs="+", choices=(0, 1), default=[0, 1])
     p.add_argument(
         "--max-steps",
@@ -241,6 +246,8 @@ def parser():
 
 def main():
     args = parser().parse_args()
+    if any(tid >= len(TASK_SUITES[args.suite]) for tid in args.task_ids):
+        raise SystemExit("Task ID is outside the supported suite's pinned task manifest")
     if len(set(args.task_ids)) != len(args.task_ids) or len(set(args.init_state_ids)) != len(
         args.init_state_ids
     ):

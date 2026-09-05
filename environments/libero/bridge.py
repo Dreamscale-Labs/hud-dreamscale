@@ -12,7 +12,7 @@ from hud_dropbear.contract import (
     CAMERAS,
     CONTROL_HZ,
     MAX_STEPS,
-    TASK_NAMES,
+    TASK_SUITES,
     build_contract,
     finite_array,
     state_from_raw,
@@ -31,10 +31,19 @@ class LiberoBridge(RobotBridge):
         self.first_action_unix_s = None
         self.selection = {}
 
-    def reset(self, *, task_id=0, init_state_id=0, seed=0, max_steps=MAX_STEPS):
+    def reset(
+        self,
+        *,
+        suite_name="libero_spatial",
+        task_id=0,
+        init_state_id=0,
+        seed=0,
+        max_steps=MAX_STEPS,
+    ):
         started = time.monotonic()
-        if type(task_id) is not int or task_id not in range(len(TASK_NAMES)):
-            raise ValueError("This demo supports libero_spatial task IDs 0, 1 and 2")
+        names = TASK_SUITES.get(suite_name)
+        if names is None or type(task_id) is not int or task_id not in range(len(names)):
+            raise ValueError("Unsupported LIBERO suite or task ID")
         if type(init_state_id) is not int or init_state_id < 0:
             raise ValueError("init_state_id must be a nonnegative integer")
         if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
@@ -48,9 +57,9 @@ class LiberoBridge(RobotBridge):
         raw._assets_path_cache = str(assets)
         benchmark = importlib.import_module("libero.libero.benchmark")
         envs = importlib.import_module("libero.libero.envs")
-        suite = benchmark.get_benchmark_dict()["libero_spatial"](task_order_index=0)
+        suite = benchmark.get_benchmark_dict()[suite_name](task_order_index=0)
         task = suite.get_task(task_id)
-        if task.name != TASK_NAMES[task_id]:
+        if task.name != names[task_id]:
             raise ValueError("Pinned LIBERO task ordering changed")
         states = suite.get_task_init_states(task_id)
         if init_state_id >= len(states):
@@ -75,6 +84,7 @@ class LiberoBridge(RobotBridge):
         self.first_action_unix_s = None
         self.max_steps = max_steps
         self.selection = {
+            "suite": suite_name,
             "task_id": task_id,
             "task_name": task.name,
             "init_state_id": init_state_id,

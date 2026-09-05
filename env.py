@@ -33,6 +33,20 @@ def create_environment(endpoint=None):
         yield {"prompt": episode["prompt"], "bindings": {"robot": {"token": episode["token"]}}}
         yield await endpoint.result(token=episode["token"])
 
+    @environment.template(id="libero_goal")
+    async def libero_goal(
+        task_id: int = 0, init_state_id: int = 0, seed: int = 0, max_steps: int = MAX_STEPS
+    ):
+        episode = await endpoint.reset(
+            suite_name="libero_goal",
+            task_id=task_id,
+            init_state_id=init_state_id,
+            seed=seed,
+            max_steps=max_steps,
+        )
+        yield {"prompt": episode["prompt"], "bindings": {"robot": {"token": episode["token"]}}}
+        yield await endpoint.result(token=episode["token"])
+
     return environment
 
 
