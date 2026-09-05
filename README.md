@@ -60,6 +60,8 @@ Results go to a new directory under `artifacts/` (or `--output <new-directory>`)
 - `timings.jsonl`: per-episode startup and per-inference timing joined by task,
   trace, session and observation IDs.
 - `traces/`: complete local HUD spans, including encoded camera video segments.
+- `videos/`: playable MP4 files for each trace and camera, assembled from those
+  local segments without changing their frames.
 
 With HUD credentials, HUD records camera videos, state and action chunks. The
 runner checks the completed platform grades and both camera streams after

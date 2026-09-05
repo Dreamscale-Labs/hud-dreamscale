@@ -12,6 +12,7 @@ from env import create_environment
 from hud_dropbear.agent import DropbearRobotAgent
 from hud_dropbear.cli import MeasuredRuntime, startup_metrics, summarize, tasks
 from hud_dropbear.contract import CAMERAS, MODEL, build_contract
+from hud_dropbear.video import export_videos
 
 
 class FakePolicy:
@@ -91,7 +92,11 @@ async def environment():
         await bridge.stop()
 
 
-async def test_real_hud_wire_grading_reuse_and_fresh_chunks():
+async def test_real_hud_wire_grading_reuse_and_fresh_chunks(tmp_path, monkeypatch):
+    import av
+    from hud.settings import settings
+
+    monkeypatch.setattr(settings, "telemetry_local_dir", str(tmp_path / "traces"))
     policy = FakePolicy()
     connects = []
     events = []
@@ -120,6 +125,12 @@ async def test_real_hud_wire_grading_reuse_and_fresh_chunks():
         inference_ids = [fields["trace_id"] for event, fields in events if event == "inference"]
         assert inference_ids == [run.trace_id for run in job.runs]
         assert all(inference_ids)
+        videos = export_videos(tmp_path / "traces", tmp_path / "videos")
+        assert len(videos) == 4
+        for video in videos:
+            with av.open(str(tmp_path / "videos" / video["file"])) as recording:
+                # Initial observation plus the observations after both actions.
+                assert len(list(recording.decode(video=0))) == 3
 
 
 async def test_malformed_model_chunk_never_reaches_simulator():

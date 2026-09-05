@@ -209,7 +209,7 @@ class DropbearRobotAgent(RobotAgent):
             if contract.get("control_rate") != CONTROL_HZ:
                 raise ValueError("The actual LIBERO environment control rate must be 10 Hz")
             self.emit("environment_ready", trace_id=self._trace_id)
-            run.trace.extra["dropbear"] = self.identity
+            run.trace.extra["dropbear"] = dict(self.identity)
             await super().__call__(run, max_steps=max_steps)
             self.emit(
                 "episode_driven", trace_id=self._trace_id, duration_s=time.monotonic() - started
@@ -222,6 +222,7 @@ class DropbearRobotAgent(RobotAgent):
             self.model.trace_id = None
             self.identity["final_transport"] = self._policy.transport_mode
             self.identity["fallback_reason"] = getattr(self._policy, "fallback_reason", None)
+            run.trace.extra["dropbear"] = dict(self.identity)
 
     def should_stop(self, obs, *, step, max_steps):
         if step == 1:

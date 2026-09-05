@@ -21,6 +21,7 @@ from .agent import DropbearRobotAgent
 from .contract import ENV_NAME, MAX_STEPS, TASK_NAMES
 from .platform import verify_platform
 from .telemetry import CURRENT_TASK, Evidence
+from .video import export_videos
 
 
 def source_revision():
@@ -192,6 +193,7 @@ async def evaluate(args):
                 and args.runtime == "hud"
             )
         # Release billable inference before checking best-effort platform uploads.
+        summary["videos"] = export_videos(args.output / "traces", args.output / "videos")
         if settings.api_key and settings.telemetry_enabled:
             summary["platform_evidence"] = await verify_platform(summary)
         else:
