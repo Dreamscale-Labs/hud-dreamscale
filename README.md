@@ -114,6 +114,7 @@ checkpoint revisions; verify new build manifests before adding entries.
 ```sh
 uv run ruff check .
 uv run pytest -q
+HUD_DROPBEAR_IMAGE=hud-dropbear-libero:local uv run pytest -q tests/test_container.py
 ```
 
 Tests exercise the real HUD robot socket, claim/grade/release lifecycle, input
