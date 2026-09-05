@@ -24,7 +24,9 @@ async def verify_platform(summary, *, client=None):
                 {
                     event.get("camera")
                     for event in events
-                    if event.get("kind") == "robot_video_segment" and event.get("url")
+                    if event.get("kind") == "robot_video_segment"
+                    and event.get("url")
+                    and event.get("index", 0) > 0
                 }
             )
             kinds = {event.get("kind") for event in events}

@@ -22,6 +22,7 @@ async def test_platform_proof_requires_both_videos_and_matching_grade(cameras, r
                 *[
                     {
                         "kind": "robot_video_segment",
+                        "index": 1,
                         "camera": camera,
                         "url": "https://example.test/video",
                     }
