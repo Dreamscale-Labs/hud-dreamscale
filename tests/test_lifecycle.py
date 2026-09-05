@@ -7,6 +7,7 @@ import pytest
 from dropbear.policy.types import ActionChunkResult, ActionTiming
 from hud import LocalRuntime, Taskset
 from hud.environment.robot import RobotBridge, RobotEndpoint
+from hud.eval import Shared
 
 from env import create_environment
 from hud_dropbear.agent import DropbearRobotAgent
@@ -294,3 +295,86 @@ def test_libero_90_selection_preserves_last_pinned_task():
     assert args.task_ids == [89]
     row = tasks([89], [1], suite="libero_90")[0]
     assert row.columns["task_name"] == TASK_SUITES["libero_90"][89]
+
+
+async def test_background_connection_overlaps_shared_environment_and_resets_episodes():
+    from hud_dropbear.contract import TASK_SUITES
+
+    policy = FakePolicy()
+    environment_ready = asyncio.Event()
+    opened = closed = 0
+
+    async def connect(**kwargs):
+        # This would deadlock if the runner awaited inference before provisioning.
+        await asyncio.wait_for(environment_ready.wait(), 5)
+        return policy
+
+    def emit(event, **fields):
+        if event == "environment_ready":
+            environment_ready.set()
+
+    async with environment() as (env, bridge):
+
+        @asynccontextmanager
+        async def provider(task):
+            nonlocal opened, closed
+            opened += 1
+            try:
+                async with LocalRuntime(env)(task) as address:
+                    yield address
+            finally:
+                closed += 1
+
+        rows = [row for suite in TASK_SUITES for row in tasks([0], [0], suite=suite)]
+        async with (
+            DropbearRobotAgent(connector=connect, emit=emit, connect_in_background=True) as agent,
+            Shared(provider, width=1) as shared,
+        ):
+            job = await Taskset("overlapped-reuse", rows).run(
+                agent, runtime=MeasuredRuntime(shared, emit), max_concurrent=1
+            )
+            assert opened == 1 and closed == 0
+            assert len(job.runs) == 5
+            assert all(run.reward == 1 and not run.trace.is_error for run in job.runs)
+        assert closed == 1 and policy.closed == 1
+        assert policy.calls == 5 and bridge._registry.all_free
+        assert [float(ep[0][0, 0]) for ep in bridge.episodes] == [1, 2, 3, 4, 5]
+
+
+async def test_cancel_during_background_connection_finishes_connector_cleanup():
+    entered, cleaned = asyncio.Event(), asyncio.Event()
+
+    async def connect(**kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaned.set()
+
+    async def run():
+        async with DropbearRobotAgent(connector=connect, connect_in_background=True):
+            await asyncio.Event().wait()
+
+    running = asyncio.create_task(run())
+    await asyncio.wait_for(entered.wait(), 5)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert cleaned.is_set()
+
+
+async def test_background_identity_failure_closes_without_sending_actions():
+    policy = FakePolicy()
+    policy.resolved_optimization_config.backend = "pytorch"
+
+    async def connect(**kwargs):
+        return policy
+
+    async with environment() as (env, bridge):
+        async with DropbearRobotAgent(connector=connect, connect_in_background=True) as agent:
+            job = await Taskset("bad-background-identity", tasks([0], [0])).run(
+                agent, runtime=LocalRuntime(env)
+            )
+        assert job.runs[0].trace.is_error
+        assert policy.closed == 1 and policy.calls == 0
+        assert bridge.actions == [] and bridge._registry.all_free

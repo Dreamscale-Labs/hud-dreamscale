@@ -14,6 +14,7 @@ from pathlib import Path
 CLI_STARTED = time.monotonic()
 
 from hud import DockerRuntime, HUDRuntime, Runtime, Task, Taskset
+from hud.eval import Shared
 from hud.settings import settings
 from hud.utils.platform import canonical_record_id
 
@@ -178,14 +179,20 @@ async def evaluate(args):
                 for n in ("hud-dropbear", "hud", "dropbear", "numpy")
             },
         )
-        async with DropbearRobotAgent(
-            region=args.region, control_hz=args.control_hz, emit=evidence.emit
-        ) as agent:
+        async with (
+            DropbearRobotAgent(
+                region=args.region,
+                control_hz=args.control_hz,
+                emit=evidence.emit,
+                connect_in_background=True,
+            ) as agent,
+            Shared(runtime, width=1) as shared_runtime,
+        ):
             job = await Taskset(
                 f"dropbear-{'all-suites' if args.all_suites else args.suite}-{args.runtime}", rows
             ).run(
                 agent,
-                runtime=MeasuredRuntime(runtime, evidence.emit),
+                runtime=MeasuredRuntime(shared_runtime, evidence.emit),
                 max_concurrent=1,
                 rollout_timeout=900,
             )

@@ -136,7 +136,13 @@ class DropbearRobotAgent(RobotAgent):
     log_every = 50
 
     def __init__(
-        self, *, region="ap-southeast-2", control_hz=CONTROL_HZ, emit=None, connector=None
+        self,
+        *,
+        region="ap-southeast-2",
+        control_hz=CONTROL_HZ,
+        emit=None,
+        connector=None,
+        connect_in_background=False,
     ):
         if control_hz not in (10, 20):
             raise ValueError("Supported LIBERO control rates are 10 and 20 Hz")
@@ -148,13 +154,25 @@ class DropbearRobotAgent(RobotAgent):
         self._running = False
         self._closed = False
         self._trace_id = None
+        self._connect_in_background = connect_in_background
+        self._connection_task = None
         self.adapter = LiberoAdapter()
         self.model = None
         self.identity = None
 
     async def __aenter__(self):
-        if self._policy is not None or self._closed:
+        if self._policy is not None or self._closed or self._connection_task is not None:
             raise RuntimeError("Use a fresh agent for each evaluation job")
+        self._connection_task = asyncio.create_task(self._connect())
+        if not self._connect_in_background:
+            try:
+                await self._connection_task
+            except BaseException:
+                await self.close()
+                raise
+        return self
+
+    async def _connect(self):
         self.emit("provider_starting", model=MODEL, region=self.region)
         started = time.monotonic()
         try:
@@ -195,37 +213,44 @@ class DropbearRobotAgent(RobotAgent):
             )
             self.model = DropbearModel(self._policy, self.emit)
             self.emit("provider_ready", duration_s=time.monotonic() - started, **self.identity)
-            return self
         except BaseException:
-            await self.close()
+            await self._close_policy()
             raise
 
     async def close(self):
         if self._closed:
             return
         self._closed = True
+        if self._connection_task is not None:
+            if not self._connection_task.done():
+                self._connection_task.cancel()
+            # Retrieve background failures even if environment setup failed first.
+            await asyncio.gather(self._connection_task, return_exceptions=True)
+        await self._close_policy()
+
+    async def _close_policy(self):
         if self._policy is not None:
+            policy, self._policy = self._policy, None
             # A cancellation must not abandon the billable session cleanup.
-            task = asyncio.create_task(self._policy.close())
+            task = asyncio.create_task(policy.close())
             try:
                 await asyncio.shield(task)
             except asyncio.CancelledError:
                 await task
                 raise
-            self.emit("provider_closed", session_id=self._policy.session_id)
+            self.emit("provider_closed", session_id=policy.session_id)
 
     async def __aexit__(self, *exc):
         await self.close()
 
     async def __call__(self, run, *, max_steps=None):
-        if self.model is None or self._closed:
+        if self._connection_task is None or self._closed:
             raise RuntimeError("Use 'async with DropbearRobotAgent() as agent' around the job")
         if self._running:
             raise RuntimeError("This provider supports one rollout at a time; max_concurrent=1")
         self._running = True
         # HUD assigns run.trace_id at rollout exit; the active ID lives in context.
         self._trace_id = run.trace_id or get_current_trace_id()
-        self.model.trace_id = self._trace_id
         started = time.monotonic()
         try:
             cap = run.client.binding(self.robot_protocol)
@@ -235,6 +260,10 @@ class DropbearRobotAgent(RobotAgent):
                     f"The actual LIBERO environment control rate must be {self.control_hz} Hz"
                 )
             self.emit("environment_ready", trace_id=self._trace_id)
+            # Simulation provisioning overlaps session startup. No observation is
+            # submitted until backend/checkpoint identity has been verified.
+            await asyncio.shield(self._connection_task)
+            self.model.trace_id = self._trace_id
             run.trace.extra["dropbear"] = dict(self.identity)
             await super().__call__(run, max_steps=max_steps)
             self.emit(
@@ -245,10 +274,12 @@ class DropbearRobotAgent(RobotAgent):
             raise
         finally:
             self._running = False
-            self.model.trace_id = None
-            self.identity["final_transport"] = self._policy.transport_mode
-            self.identity["fallback_reason"] = getattr(self._policy, "fallback_reason", None)
-            run.trace.extra["dropbear"] = dict(self.identity)
+            if self.model is not None:
+                self.model.trace_id = None
+            if self.identity is not None and self._policy is not None:
+                self.identity["final_transport"] = self._policy.transport_mode
+                self.identity["fallback_reason"] = getattr(self._policy, "fallback_reason", None)
+                run.trace.extra["dropbear"] = dict(self.identity)
 
     def should_stop(self, obs, *, step, max_steps):
         if step == 1:

@@ -97,6 +97,13 @@ Additional attempts can be selected explicitly; do not hide failures when
 combining run reports. This demonstrates integration coverage, not benchmark-wide
 accuracy or unseen-task generalization.
 
+The runner starts inference and simulator provisioning concurrently, then waits
+for verified model identity before submitting any observations. One HUD `Shared`
+runtime and one inference connection remain open for the sequential job; each
+episode resets the simulator, robot claim and action queue. Both resources close
+when the job exits, including on failure or cancellation. This avoids repeating
+container/model startup for every episode. The retained resources remain billable.
+
 ## HUD-hosted simulation
 
 After local validation:
