@@ -38,6 +38,21 @@ the build, so episode startup does not download them.
 To run all six episodes, omit the task-selection options. For an already-served
 HUD environment use `--runtime attached --env-url tcp://127.0.0.1:8765`.
 
+For distinct manipulation tasks, the same environment also exposes the ten
+`libero_goal` tasks in task-order 0. For example, evaluate drawer opening, pushing
+a plate, placing cream cheese in a bowl, turning on the stove, and placing a wine
+bottle on the rack, each from initial state 0:
+
+```sh
+uv run hud-dropbear --runtime docker --suite libero_goal \
+  --task-ids 0 5 6 7 9 --init-state-ids 0
+```
+
+These are additional local validation runs. Their scores do not substitute for
+the default six-case HUD-hosted acceptance taskset below. Task names are checked
+against the pinned simulator manifest, and the simulator grades each task using
+its own success predicate.
+
 ## HUD-hosted simulation
 
 After local validation:

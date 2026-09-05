@@ -59,9 +59,11 @@ class FakeBridge(RobotBridge):
         self.contract = build_contract()
         self.actions = []
         self.episodes = []
+        self.selections = []
         self.limit = 2
 
     def reset(self, **kwargs):
+        self.selections.append(kwargs)
         self.actions = []
         self.episodes.append(self.actions)
         return "test task"
@@ -147,6 +149,24 @@ async def test_malformed_model_chunk_never_reaches_simulator():
         assert job.runs[0].trace.is_error
         assert bridge.actions == [] and bridge._registry.all_free
         assert policy.closed == 1
+
+
+async def test_goal_template_preserves_distinct_task_selections():
+    policy = FakePolicy()
+
+    async def connect(**kwargs):
+        return policy
+
+    selected = tasks([0, 5, 7], [0], suite="libero_goal", max_steps=3)
+    async with environment() as (env, bridge):
+        async with DropbearRobotAgent(connector=connect) as agent:
+            job = await Taskset("goal-contract", selected).run(agent, runtime=LocalRuntime(env))
+        assert len(job.runs) == 3 and all(not run.trace.is_error for run in job.runs)
+        assert [row["suite_name"] for row in bridge.selections] == ["libero_goal"] * 3
+        assert [row["task_id"] for row in bridge.selections] == [0, 5, 7]
+        assert len({task.columns["task_name"] for task in selected}) == 3
+        assert policy.calls == 3 and policy.closed == 1
+        assert [float(ep[0][0, 0]) for ep in bridge.episodes] == [1.0, 2.0, 3.0]
 
 
 async def test_inference_failure_releases_claim_and_session():
