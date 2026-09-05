@@ -1,0 +1,18 @@
+{
+  "b2405523e67019934dd81be1": {
+    "checkpoint": "allenai/MolmoAct2-LIBERO",
+    "revision": "0d24a92bd1faf321ef497c3bbd5681af97c65aa2",
+    "fingerprint": "014c358f8761e5f1391c931b3f358b0eed202e6422c4eaee4ae876b83613f70a",
+    "norm_tag": "libero",
+    "action_horizon": 10,
+    "action_dim": 7
+  },
+  "ad661627af0e95fd3151e342": {
+    "checkpoint": "allenai/MolmoAct2-LIBERO",
+    "revision": "0d24a92bd1faf321ef497c3bbd5681af97c65aa2",
+    "fingerprint": "137dfc2451aed830e60b0b07b51012372030fda3a95c4d419c5b11af5bee8ca6",
+    "norm_tag": "libero",
+    "action_horizon": 10,
+    "action_dim": 7
+  }
+}

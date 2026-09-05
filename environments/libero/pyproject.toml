@@ -1,0 +1,41 @@
+[project]
+name = "hud-dropbear-libero-environment"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "hud[robot] @ git+https://github.com/hud-evals/hud-python@0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
+  "hf-libero==0.1.3",
+  "numpy==1.26.4",
+  "mujoco==3.3.7",
+  "robosuite==1.4.1",
+  "bddl==1.0.1",
+  "torch==2.6.0",
+  "easydict>=1.13,<2",
+  "future>=1,<2",
+  "pyyaml>=6,<7",
+  "imageio>=2.36,<3",
+  "opencv-python==4.11.0.86",
+  "cloudpickle>=2,<4",
+  "gymnasium>=1,<2",
+  "huggingface-hub>=1,<2",
+  "tqdm>=4.66,<5",
+  "matplotlib>=3.9,<4",
+]
+
+[tool.uv]
+package = false
+
+# hf-libero's published dependency list includes its training stack and an older
+# robosuite pin. Declare the dependencies exercised by this simulation-only image.
+[[tool.uv.dependency-metadata]]
+name = "hf-libero"
+version = "0.1.3"
+requires-dist = []
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{index = "pytorch-cpu", marker = "sys_platform == 'linux'"}]

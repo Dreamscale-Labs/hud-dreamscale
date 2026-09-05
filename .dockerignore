@@ -1,0 +1,11 @@
+.git
+.venv
+**/.venv
+**/__pycache__
+.pytest_cache
+.ruff_cache
+artifacts
+.env*
+.hud
+tests
+dist

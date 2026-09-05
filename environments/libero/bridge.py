@@ -1,0 +1,133 @@
+"""CPU LIBERO simulation exposed through HUD's standard robot capability."""
+
+import importlib
+import os
+import time
+from pathlib import Path
+
+import numpy as np
+from hud.environment.robot import RobotBridge
+
+from hud_dropbear.contract import (
+    CAMERAS,
+    CONTROL_HZ,
+    MAX_STEPS,
+    TASK_NAMES,
+    build_contract,
+    finite_array,
+    state_from_raw,
+)
+
+
+class LiberoBridge(RobotBridge):
+    def __init__(self):
+        super().__init__()
+        self.contract = build_contract()
+        self.step_timeout = 90.0
+        self._env = None
+        self._obs = None
+        self.steps = 0
+        self.reset_seconds = 0.0
+        self.first_action_unix_s = None
+        self.selection = {}
+
+    def reset(self, *, task_id=0, init_state_id=0, seed=0, max_steps=MAX_STEPS):
+        started = time.monotonic()
+        if type(task_id) is not int or task_id not in range(len(TASK_NAMES)):
+            raise ValueError("This demo supports libero_spatial task IDs 0, 1 and 2")
+        if type(init_state_id) is not int or init_state_id < 0:
+            raise ValueError("init_state_id must be a nonnegative integer")
+        if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
+            raise ValueError("max_steps must be between 1 and 600")
+        self._close_sim()
+        # Bootstrap is a build/setup command, never a runtime download.
+        assets = Path(os.environ.get("LIBERO_ASSETS_PATH", "/opt/libero-assets"))
+        if not assets.is_dir():
+            raise RuntimeError("LIBERO assets are missing; run the image/setup build first")
+        raw = importlib.import_module("libero.libero")
+        raw._assets_path_cache = str(assets)
+        benchmark = importlib.import_module("libero.libero.benchmark")
+        envs = importlib.import_module("libero.libero.envs")
+        suite = benchmark.get_benchmark_dict()["libero_spatial"](task_order_index=0)
+        task = suite.get_task(task_id)
+        if task.name != TASK_NAMES[task_id]:
+            raise ValueError("Pinned LIBERO task ordering changed")
+        states = suite.get_task_init_states(task_id)
+        if init_state_id >= len(states):
+            raise ValueError("init_state_id is outside the task's available initial states")
+        self._env = envs.OffScreenRenderEnv(
+            bddl_file_name=str(
+                Path(raw.get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
+            ),
+            camera_heights=256,
+            camera_widths=256,
+            control_freq=CONTROL_HZ,
+        )
+        self._env.seed(seed)
+        self._env.reset()
+        self._obs = self._env.set_init_state(states[init_state_id])
+        for _ in range(10):
+            self._obs, _, _, _ = self._env.step([0.0] * 6 + [-1.0])
+        self.steps = 0
+        self.success = False
+        self.total_reward = 0.0
+        self.terminated = False
+        self.first_action_unix_s = None
+        self.max_steps = max_steps
+        self.selection = {
+            "task_id": task_id,
+            "task_name": task.name,
+            "init_state_id": init_state_id,
+            "seed": seed,
+        }
+        self.reset_seconds = time.monotonic() - started
+        return str(task.language)
+
+    def step(self, action):
+        action = finite_array(action, (1, 7), "batched LIBERO action")
+        if self._env is None or self.terminated:
+            raise RuntimeError("An active LIBERO episode is required")
+        self._obs, reward, _done, _info = self._env.step(action[0].tolist())
+        if self.steps == 0:
+            self.first_action_unix_s = time.time()
+        self.steps += 1
+        self.total_reward += float(reward)
+        # Termination/time limits are not proof of success; use LIBERO's task predicate.
+        self.success = bool(self._env.check_success())
+        self.terminated = self.success or self.steps >= self.max_steps
+
+    def get_observation(self):
+        if self._obs is None:
+            return None
+        data = {key: np.asarray(self._obs[key])[None] for key in CAMERAS}
+        data["state"] = state_from_raw(self._obs)[None]
+        return data, np.array([self.terminated], dtype=bool)
+
+    def result(self):
+        return {
+            **super().result(),
+            "info": {
+                **self.selection,
+                "steps": self.steps,
+                "reset_seconds": self.reset_seconds,
+                "control_hz": CONTROL_HZ,
+                "first_action_unix_s": self.first_action_unix_s,
+                "termination": "success"
+                if self.success
+                else "action_limit"
+                if self.terminated
+                else "interrupted",
+            },
+        }
+
+    def _close_sim(self):
+        if self._env is not None:
+            self._env.close()
+            self._env = None
+        self._obs = None
+
+    async def stop(self):
+        try:
+            await super().stop()
+        finally:
+            await self._run_on_sim(self._close_sim)

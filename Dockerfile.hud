@@ -1,0 +1,23 @@
+FROM python:3.12.13-slim-bookworm
+COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /usr/local/bin/uv
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates libosmesa6 libgl1 libglib2.0-0 libgomp1 build-essential linux-libc-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+ENV UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1 \
+    PYTHONPATH=/app/src:/app \
+    MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa \
+    LIBERO_CONFIG_PATH=/opt/libero-config LIBERO_ASSETS_PATH=/opt/libero-assets \
+    LIBERO_ASSETS_REVISION=0b3ea86be5fe169d0fd036ae63d1070ec09e90f6 \
+    OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 NUMBA_NUM_THREADS=2
+COPY environments/libero/pyproject.toml environments/libero/uv.lock /app/environments/libero/
+RUN uv sync --project environments/libero --locked --no-dev --no-cache
+ENV PATH=/app/environments/libero/.venv/bin:$PATH
+COPY environments/libero/bootstrap.py /app/environments/libero/bootstrap.py
+RUN python environments/libero/bootstrap.py && rm -rf /root/.cache/huggingface
+COPY src /app/src
+COPY environments/libero/bridge.py /app/environments/libero/bridge.py
+COPY environments/libero/preflight.py /app/environments/libero/preflight.py
+COPY env.py /app/env.py
+EXPOSE 8765
+CMD ["hud", "serve", "env.py", "--host", "0.0.0.0", "--port", "8765"]

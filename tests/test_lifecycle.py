@@ -1,0 +1,194 @@
+import asyncio
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from dropbear.policy.types import ActionChunkResult, ActionTiming
+from hud import LocalRuntime, Taskset
+from hud.environment.robot import RobotBridge, RobotEndpoint
+
+from env import create_environment
+from hud_dropbear.agent import DropbearRobotAgent
+from hud_dropbear.cli import MeasuredRuntime, startup_metrics, summarize, tasks
+from hud_dropbear.contract import CAMERAS, MODEL, build_contract
+
+
+class FakePolicy:
+    model = MODEL
+    session_id = "test-session"
+    region = "ap-southeast-2"
+    action_hz = 10
+    chunk_size = 10
+    transport_mode = "quic"
+
+    def __init__(self, bad=False, wait=False):
+        self.resolved_optimization_config = SimpleNamespace(
+            backend="tensorrt",
+            rtc="off",
+            calibration="off",
+            tensorrt_artifact_fingerprint=(
+                "014c358f8761e5f1391c931b3f358b0eed202e6422c4eaee4ae876b83613f70a"
+            ),
+            tensorrt_artifact_id="b2405523e67019934dd81be1",
+        )
+        self.calls = 0
+        self.closed = 0
+        self.bad = bad
+        self.wait = wait
+        self.entered = asyncio.Event()
+
+    async def predict(self, observation, *, instruction, timeout_s):
+        self.calls += 1
+        self.entered.set()
+        if self.wait:
+            await asyncio.Event().wait()
+        rows = np.full((10, 7), self.calls, dtype=np.float32)
+        if self.bad:
+            rows[0, 0] = np.nan
+        return ActionChunkResult(self.calls - 1, self.calls, rows, ActionTiming(1.0))
+
+    async def close(self):
+        self.closed += 1
+
+
+class FakeBridge(RobotBridge):
+    def __init__(self):
+        super().__init__()
+        self.contract = build_contract()
+        self.actions = []
+        self.episodes = []
+        self.limit = 2
+
+    def reset(self, **kwargs):
+        self.actions = []
+        self.episodes.append(self.actions)
+        return "test task"
+
+    def step(self, action):
+        self.actions.append(action.copy())
+        self.success = len(self.actions) == self.limit
+        self.terminated = self.success
+
+    def get_observation(self):
+        data = {key: np.zeros((1, 256, 256, 3), dtype=np.uint8) for key in CAMERAS}
+        data["state"] = np.zeros((1, 8), dtype=np.float32)
+        return data, np.array([self.terminated])
+
+
+@asynccontextmanager
+async def environment():
+    bridge = FakeBridge()
+    await bridge.start()
+    server = await bridge.serve_control("127.0.0.1", 0)
+    endpoint = RobotEndpoint.remote("127.0.0.1", server.sockets[0].getsockname()[1])
+    try:
+        yield create_environment(endpoint), bridge
+    finally:
+        await endpoint.stop()
+        server.close()
+        await server.wait_closed()
+        await bridge.stop()
+
+
+async def test_real_hud_wire_grading_reuse_and_fresh_chunks():
+    policy = FakePolicy()
+    connects = []
+    events = []
+
+    async def connect(**kwargs):
+        connects.append(kwargs)
+        return policy
+
+    async with environment() as (env, bridge):
+        async with DropbearRobotAgent(
+            connector=connect, emit=lambda e, **f: events.append((e, f))
+        ) as a:
+            job = await Taskset("test", tasks([0], [0, 1], max_steps=3)).run(
+                a,
+                runtime=MeasuredRuntime(LocalRuntime(env), lambda e, **f: events.append((e, f))),
+                max_concurrent=1,
+            )
+        assert [r.reward for r in job.runs] == [1.0, 1.0]
+        assert summarize(job)["integration_errors"] == 0
+        assert all(not r.trace.is_error for r in job.runs)
+        assert len(connects) == 1 and policy.calls == 2 and policy.closed == 1
+        assert connects[0]["keep_warm"] == 0
+        assert [float(ep[0][0, 0]) for ep in bridge.episodes] == [1.0, 2.0]
+        assert bridge._registry.all_free
+        assert len([e for e, _ in events if e == "first_action_confirmed"]) == 2
+
+
+async def test_malformed_model_chunk_never_reaches_simulator():
+    policy = FakePolicy(bad=True)
+
+    async def connect(**kwargs):
+        return policy
+
+    async with environment() as (env, bridge):
+        async with DropbearRobotAgent(connector=connect) as a:
+            job = await Taskset("test", tasks([0], [0], max_steps=3)).run(
+                a, runtime=LocalRuntime(env)
+            )
+        assert job.runs[0].trace.is_error
+        assert bridge.actions == [] and bridge._registry.all_free
+        assert policy.closed == 1
+
+
+async def test_cancellation_releases_inference_session():
+    policy = FakePolicy(wait=True)
+
+    async def connect(**kwargs):
+        return policy
+
+    async with environment() as (env, bridge):
+
+        async def run():
+            async with DropbearRobotAgent(connector=connect) as agent:
+                await Taskset("test", tasks([0], [0])).run(agent, runtime=LocalRuntime(env))
+
+        task = asyncio.create_task(run())
+        await asyncio.wait_for(policy.entered.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert policy.closed == 1
+        assert bridge._registry.all_free
+
+
+async def test_wrong_backend_closes_before_any_actions():
+    policy = FakePolicy()
+    policy.resolved_optimization_config.backend = "pytorch"
+
+    async def connect(**kwargs):
+        return policy
+
+    with pytest.raises(ValueError, match="TensorRT"):
+        async with DropbearRobotAgent(connector=connect):
+            pass
+    assert policy.calls == 0 and policy.closed == 1
+
+
+async def test_unknown_artifact_is_rejected():
+    policy = FakePolicy()
+    policy.resolved_optimization_config.tensorrt_artifact_fingerprint = "different-engine"
+
+    async def connect(**kwargs):
+        return policy
+
+    with pytest.raises(ValueError, match="Unverified TensorRT"):
+        async with DropbearRobotAgent(connector=connect):
+            pass
+    assert policy.calls == 0 and policy.closed == 1
+
+
+def test_timing_joins_by_task_after_a_failed_environment():
+    rows = [
+        {"event": "environment_starting", "task": "failed", "elapsed_s": 1},
+        {"event": "environment_starting", "task": "working", "elapsed_s": 20},
+        {"event": "environment_ready", "task": "working", "elapsed_s": 25},
+        {"event": "first_action_confirmed", "task": "working", "elapsed_s": 27},
+    ]
+    result = startup_metrics(rows)
+    assert result["simulation_setup_s"] == {"working": 5}
+    assert result["episode_start_to_first_action_s"] == {"working": 7}
