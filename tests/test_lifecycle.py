@@ -265,3 +265,32 @@ def test_timing_joins_by_task_after_a_failed_environment():
     result = startup_metrics(rows)
     assert result["simulation_setup_s"] == {"working": 5}
     assert result["episode_start_to_first_action_s"] == {"working": 7}
+
+
+async def test_all_five_suite_templates_keep_selection_and_reset_queues():
+    from hud_dropbear.contract import TASK_SUITES
+
+    policy = FakePolicy()
+
+    async def connect(**kwargs):
+        return policy
+
+    rows = [row for suite in TASK_SUITES for row in tasks([0], [0], suite=suite, max_steps=3)]
+    async with environment() as (env, bridge):
+        async with DropbearRobotAgent(connector=connect) as agent:
+            job = await Taskset("five-suite-contract", rows).run(agent, runtime=LocalRuntime(env))
+        assert len(job.runs) == 5
+        assert all(not run.trace.is_error and run.reward == 1 for run in job.runs)
+        assert [selection["suite_name"] for selection in bridge.selections] == list(TASK_SUITES)
+        assert policy.calls == 5 and policy.closed == 1
+        assert [float(episode[0][0, 0]) for episode in bridge.episodes] == [1, 2, 3, 4, 5]
+
+
+def test_libero_90_selection_preserves_last_pinned_task():
+    from hud_dropbear.cli import parser
+    from hud_dropbear.contract import TASK_SUITES
+
+    args = parser().parse_args(["--suite", "libero_90", "--task-ids", "89"])
+    assert args.task_ids == [89]
+    row = tasks([89], [1], suite="libero_90")[0]
+    assert row.columns["task_name"] == TASK_SUITES["libero_90"][89]

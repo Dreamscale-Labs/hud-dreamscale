@@ -145,7 +145,12 @@ async def evaluate(args):
         if not args.env_url:
             raise ValueError("--env-url is required for an already-running environment")
         runtime = Runtime(args.env_url)
-    rows = tasks(args.task_ids, args.init_state_ids, max_steps=args.max_steps, suite=args.suite)
+    suites = list(TASK_SUITES) if args.all_suites else [args.suite]
+    rows = [
+        row
+        for suite in suites
+        for row in tasks(args.task_ids, args.init_state_ids, max_steps=args.max_steps, suite=suite)
+    ]
     evidence = Evidence(args.output / "timings.jsonl", started=CLI_STARTED)
     previous_trace_dir = settings.telemetry_local_dir
     settings.telemetry_local_dir = str((args.output / "traces").resolve())
@@ -154,7 +159,7 @@ async def evaluate(args):
         evidence.emit(
             "job_start",
             runtime=args.runtime,
-            suite=args.suite,
+            suites=suites,
             source=source_revision(),
             task_count=len(rows),
             max_steps=args.max_steps,
@@ -176,7 +181,9 @@ async def evaluate(args):
         async with DropbearRobotAgent(
             region=args.region, control_hz=args.control_hz, emit=evidence.emit
         ) as agent:
-            job = await Taskset(f"dropbear-{args.suite}-{args.runtime}", rows).run(
+            job = await Taskset(
+                f"dropbear-{'all-suites' if args.all_suites else args.suite}-{args.runtime}", rows
+            ).run(
                 agent,
                 runtime=MeasuredRuntime(runtime, evidence.emit),
                 max_concurrent=1,
@@ -188,6 +195,19 @@ async def evaluate(args):
             summary["expected_episodes"] = len(rows)
             summary["timings"] = startup_metrics(evidence.rows)
             summary["provenance"] = evidence.rows[0]
+            summary["suite_results"] = {
+                suite: {
+                    "episodes": sum(
+                        r["grade"].get("info", {}).get("suite") == suite for r in summary["runs"]
+                    ),
+                    "successes": sum(
+                        r["grade"].get("info", {}).get("suite") == suite
+                        and r["grade"].get("success") is True
+                        for r in summary["runs"]
+                    ),
+                }
+                for suite in suites
+            }
             summary["timing_sidecar"] = "timings.jsonl"
             summary["demo_passed"] = (
                 args.max_steps == MAX_STEPS
@@ -201,6 +221,15 @@ async def evaluate(args):
                 and sorted(args.task_ids) == [0, 1, 2]
                 and sorted(args.init_state_ids) == [0, 1]
             )
+            if args.all_suites:
+                summary["demo_passed"] = (
+                    args.runtime == "hud"
+                    and args.control_hz == CONTROL_HZ
+                    and args.max_steps == MAX_STEPS
+                    and len(job.runs) == len(rows)
+                    and summary["integration_errors"] == 0
+                    and all(row["successes"] >= 1 for row in summary["suite_results"].values())
+                )
         # Release billable inference before checking best-effort platform uploads.
         summary["videos"] = export_videos(args.output / "traces", args.output / "videos")
         if settings.api_key and settings.telemetry_enabled:
@@ -228,6 +257,7 @@ def parser():
     p.add_argument("--image", default="hud-dropbear-libero:local")
     p.add_argument("--env-url", help="HUD control URL for --runtime attached")
     p.add_argument("--suite", choices=TASK_SUITES, default="libero_spatial")
+    p.add_argument("--all-suites", action="store_true", help="Evaluate all five LIBERO suites")
     p.add_argument(
         "--control-hz",
         type=int,
@@ -236,7 +266,7 @@ def parser():
         help="Actual simulator control rate; attached environments must use the same rate",
     )
     p.add_argument("--region", default="ap-southeast-2", choices=("ap-southeast-2", "us-west-2"))
-    p.add_argument("--task-ids", type=int, nargs="+", choices=range(10), default=[0, 1, 2])
+    p.add_argument("--task-ids", type=int, nargs="+", choices=range(90), default=[0, 1, 2])
     p.add_argument("--init-state-ids", type=int, nargs="+", choices=(0, 1), default=[0, 1])
     p.add_argument(
         "--max-steps",
@@ -256,7 +286,8 @@ def parser():
 
 def main():
     args = parser().parse_args()
-    if any(tid >= len(TASK_SUITES[args.suite]) for tid in args.task_ids):
+    suites = list(TASK_SUITES) if args.all_suites else [args.suite]
+    if any(tid >= len(TASK_SUITES[suite]) for suite in suites for tid in args.task_ids):
         raise SystemExit("Task ID is outside the supported suite's pinned task manifest")
     if len(set(args.task_ids)) != len(args.task_ids) or len(set(args.init_state_ids)) != len(
         args.init_state_ids

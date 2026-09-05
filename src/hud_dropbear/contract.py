@@ -1,6 +1,8 @@
 """The explicit simulator-to-provider contract (no model or simulator imports)."""
 
+import json
 from copy import deepcopy
+from importlib.resources import files
 
 import numpy as np
 
@@ -25,24 +27,16 @@ STATE_NAMES = [
     "gripper_qpos_1",
 ]
 ACTION_NAMES = ["delta_x", "delta_y", "delta_z", "delta_rx", "delta_ry", "delta_rz", "gripper"]
-TASK_NAMES = (
-    "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate",
-    "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate",
-    "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate",
-)
-GOAL_TASK_NAMES = (
-    "open_the_middle_drawer_of_the_cabinet",
-    "put_the_bowl_on_the_stove",
-    "put_the_wine_bottle_on_top_of_the_cabinet",
-    "open_the_top_drawer_and_put_the_bowl_inside",
-    "put_the_bowl_on_top_of_the_cabinet",
-    "push_the_plate_to_the_front_of_the_stove",
-    "put_the_cream_cheese_in_the_bowl",
-    "turn_on_the_stove",
-    "put_the_bowl_on_the_plate",
-    "put_the_wine_bottle_on_the_rack",
-)
-TASK_SUITES = {"libero_spatial": TASK_NAMES, "libero_goal": GOAL_TASK_NAMES}
+# Generated from hf-libero 0.1.3, task_order_index=0. The simulator independently
+# checks every selected name before it starts an episode.
+TASK_SUITES = {
+    suite: tuple(names)
+    for suite, names in json.loads(
+        files("hud_dropbear").joinpath("task_manifest.json").read_text()
+    ).items()
+}
+TASK_NAMES = TASK_SUITES["libero_spatial"]
+GOAL_TASK_NAMES = TASK_SUITES["libero_goal"]
 
 
 def build_contract(control_hz=CONTROL_HZ):

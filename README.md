@@ -79,20 +79,23 @@ Keep that server running and use `uv run hud-dropbear --runtime attached
 --env-url tcp://127.0.0.1:8765` in another terminal. The server and runner default
 to 20 Hz. This remains local simulation with HUD traces, not HUD-hosted execution.
 
-For distinct manipulation tasks, the same environment also exposes the ten
-`libero_goal` tasks in task-order 0. For example, evaluate drawer opening, pushing
-a plate, placing cream cheese in a bowl, turning on the stove, and placing a wine
-bottle on the rack, each from initial state 0:
+The environment exposes all five executable suites in the pinned LIBERO package:
+`libero_spatial`, `libero_object`, `libero_goal`, `libero_10` and `libero_90`.
+Task-order 0 names are checked against `task_manifest.json` before each episode.
+Use `--suite libero_90 --task-ids 89` for a particular task; `--all-suites` applies
+the selected task and initial-state IDs to each suite while reusing one inference
+connection. For example, one episode per suite:
 
 ```sh
-uv run hud-dropbear --runtime docker --suite libero_goal \
-  --task-ids 0 5 6 7 9 --init-state-ids 0
+uv run hud-dropbear --runtime hud --all-suites --task-ids 0 --init-state-ids 0
 ```
 
-These are additional local validation runs. Their scores do not substitute for
-the default six-case HUD-hosted acceptance taskset below. Task names are checked
-against the pinned simulator manifest, and the simulator grades each task using
-its own success predicate.
+The all-suite acceptance result requires at least one simulator-graded success
+in each suite, no integration errors, verified HUD traces, hosted simulation,
+and the documented full episode limit/cadence. Every attempted episode is saved.
+Additional attempts can be selected explicitly; do not hide failures when
+combining run reports. This demonstrates integration coverage, not benchmark-wide
+accuracy or unseen-task generalization.
 
 ## HUD-hosted simulation
 
