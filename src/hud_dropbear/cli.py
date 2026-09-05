@@ -51,12 +51,22 @@ def startup_metrics(events):
 
     inferences = [r for r in events if r["event"] == "inference"]
     providers = [r for r in events if r["event"] == "provider_ready"]
+    first_by_task = {}
+    steady = []
+    for row in inferences:
+        task = row.get("task")
+        if task in first_by_task:
+            steady.append(row["duration_s"])
+        else:
+            first_by_task[task] = row["duration_s"]
     return {
         "cli_entry_to_first_action_s": first[0] if first else None,
         "provider_readiness_s": providers[0]["duration_s"] if providers else None,
         "simulation_setup_s": intervals("environment_ready"),
         "episode_start_to_first_action_s": intervals("first_action_confirmed"),
         "first_inference_s": inferences[0]["duration_s"] if inferences else None,
+        "episode_first_inference_s": first_by_task,
+        "steady_state_inference_samples_s": steady,
         "inference_samples_s": [r["duration_s"] for r in inferences],
     }
 
@@ -81,6 +91,7 @@ def summarize(job, task_rows=()):
         runs.append(
             {
                 "trace_id": run.trace_id,
+                "trace_url": f"{settings.hud_web_url}/trace/{canonical_record_id(run.trace_id)}",
                 "task": run.slug,
                 "args": selections.get(run.slug, {}),
                 "reward": run.reward,
@@ -118,6 +129,16 @@ async def evaluate(args):
             runtime=args.runtime,
             task_count=len(rows),
             max_steps=args.max_steps,
+            image=args.image if args.runtime == "docker" else None,
+            hud_revision="0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
+            simulator={
+                "hf_libero": "0.1.3",
+                "assets_revision": "0b3ea86be5fe169d0fd036ae63d1070ec09e90f6",
+                "mujoco": "3.3.7",
+                "control_hz": 10,
+                "settling_steps": 10,
+                "chunk_size": 10,
+            },
             versions={
                 n: importlib.metadata.version(n)
                 for n in ("hud-dropbear", "hud", "dropbear", "numpy")
@@ -135,6 +156,8 @@ async def evaluate(args):
             summary["runtime"] = args.runtime
             summary["expected_episodes"] = len(rows)
             summary["timings"] = startup_metrics(evidence.rows)
+            summary["provenance"] = evidence.rows[0]
+            summary["timing_sidecar"] = "timings.jsonl"
             summary["demo_passed"] = (
                 args.max_steps == MAX_STEPS
                 and len(rows) == 6

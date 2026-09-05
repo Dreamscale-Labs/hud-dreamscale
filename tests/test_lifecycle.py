@@ -135,6 +135,25 @@ async def test_malformed_model_chunk_never_reaches_simulator():
         assert policy.closed == 1
 
 
+async def test_inference_failure_releases_claim_and_session():
+    policy = FakePolicy()
+
+    async def predict(*args, **kwargs):
+        raise ConnectionError("test transport failure")
+
+    policy.predict = predict
+
+    async def connect(**kwargs):
+        return policy
+
+    async with environment() as (env, bridge):
+        async with DropbearRobotAgent(connector=connect) as agent:
+            job = await Taskset("test", tasks([0], [0])).run(agent, runtime=LocalRuntime(env))
+        assert summarize(job)["integration_errors"] == 1
+        assert bridge.actions == [] and bridge._registry.all_free
+        assert policy.closed == 1
+
+
 async def test_cancellation_releases_inference_session():
     policy = FakePolicy(wait=True)
 

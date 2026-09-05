@@ -26,6 +26,7 @@ upstream dependency constraints. No global Python environment is changed.
 
 ```sh
 docker build -f Dockerfile.hud -t hud-dropbear-libero:local .
+docker run --rm hud-dropbear-libero:local python -m environments.libero.preflight
 uv run hud-dropbear --runtime docker --task-ids 0 --init-state-ids 0
 ```
 
