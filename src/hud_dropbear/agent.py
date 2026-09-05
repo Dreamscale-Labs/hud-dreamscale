@@ -7,6 +7,8 @@ from dataclasses import asdict
 from importlib.resources import files
 
 import dropbear
+from dropbear.config import load_config
+from dropbear.control import ControlPlaneClient
 from hud.agents.robot.agent import RobotAgent
 from hud.agents.robot.model import Model
 
@@ -14,7 +16,46 @@ from .adapter import LiberoAdapter
 from .contract import CHECKPOINT, CHUNK_SIZE, CONTROL_HZ, MAX_STEPS, MODEL, REVISION, finite_array
 
 
-def serving_identity(policy):
+async def ready_target_artifact(policy, *, client_factory=ControlPlaneClient):
+    """Resolve cold-session metadata against an unambiguous live worker snapshot.
+
+    SDK 0.1.0a15 can retain the planned configuration after cold startup. Never
+    guess from a model name or an aggregate multi-worker status response.
+    """
+    config = load_config()
+    client = client_factory(config.control_plane_url, config.api_key)
+    try:
+        session = await client.get_session(policy.session_id)
+        status = await client.status()
+    finally:
+        await client.close()
+    if (
+        session.status != "ready"
+        or session.model != policy.model
+        or session.region != policy.region
+        or not session.target_key
+    ):
+        raise ValueError("Cannot verify the active Dropbear session's target")
+    targets = status.get(policy.model, {}).get("targets", {}).values()
+    matches = [t for t in targets if t.get("target_key") == session.target_key]
+    if len(matches) != 1:
+        raise ValueError("Cannot identify one Dropbear target for this session")
+    target = matches[0]
+    if not target.get("ready") or any(
+        target.get(key) != 1 for key in ("worker_count", "ready_worker_count", "active_sessions")
+    ):
+        raise ValueError("Artifact fallback requires exactly one ready worker and active session")
+    caps = target.get("worker_capabilities") or {}
+    artifact = caps.get("tensorrt_artifact") or {}
+    if caps.get("backends") != ["tensorrt"]:
+        raise ValueError("Artifact fallback requires a dedicated TensorRT worker")
+    return {
+        "fingerprint": caps.get("tensorrt_artifact_fingerprint"),
+        "artifact_id": artifact.get("tensorrt_artifact_id"),
+    }
+
+
+def serving_identity(policy, *, resolved_artifact=None):
     config = policy.resolved_optimization_config
     if policy.model != MODEL or config.backend != "tensorrt":
         raise ValueError("The demo requires MolmoAct2-LIBERO served with TensorRT")
@@ -22,11 +63,21 @@ def serving_identity(policy):
         raise ValueError("The synchronous HUD baseline requires RTC and calibration off")
     if (policy.action_hz, policy.chunk_size) != (CONTROL_HZ, CHUNK_SIZE):
         raise ValueError("Dropbear's resolved LIBERO timing contract has changed")
-    if not config.tensorrt_artifact_fingerprint:
+    fingerprint = (
+        resolved_artifact["fingerprint"]
+        if resolved_artifact is not None
+        else config.tensorrt_artifact_fingerprint
+    )
+    artifact_id = (
+        resolved_artifact["artifact_id"]
+        if resolved_artifact is not None
+        else config.tensorrt_artifact_id
+    )
+    if not fingerprint:
         raise ValueError("Dropbear did not report its TensorRT artifact fingerprint")
     contracts = json.loads(files("hud_dropbear").joinpath("serving_contracts.json").read_text())
-    artifact = contracts.get(config.tensorrt_artifact_id)
-    if artifact is None or artifact["fingerprint"] != config.tensorrt_artifact_fingerprint:
+    artifact = contracts.get(artifact_id)
+    if artifact is None or artifact["fingerprint"] != fingerprint:
         raise ValueError("Unverified TensorRT artifact; verify its checkpoint manifest before use")
     if artifact["checkpoint"] != CHECKPOINT or artifact["revision"] != REVISION:
         raise ValueError("The TensorRT artifact targets a different checkpoint revision")
@@ -39,8 +90,12 @@ def serving_identity(policy):
         "checkpoint": CHECKPOINT,
         "checkpoint_revision": REVISION,
         "checkpoint_verification": "manifest_and_engine_fingerprint",
-        "tensorrt_artifact_fingerprint": config.tensorrt_artifact_fingerprint,
-        "tensorrt_artifact_id": config.tensorrt_artifact_id,
+        "artifact_identity_source": "single_ready_worker_status"
+        if resolved_artifact is not None
+        else "session_configuration",
+        "session_artifact_id": config.tensorrt_artifact_id,
+        "tensorrt_artifact_fingerprint": fingerprint,
+        "tensorrt_artifact_id": artifact_id,
         "action_hz": policy.action_hz,
         "chunk_size": policy.chunk_size,
     }
@@ -106,7 +161,11 @@ class DropbearRobotAgent(RobotAgent):
                 idle_timeout=900,
                 startup_timeout=900,
             )
-            self.identity = serving_identity(self._policy)
+            self.emit("provider_connected", duration_s=time.monotonic() - started)
+            resolved_artifact = None
+            if not self._policy.resolved_optimization_config.tensorrt_artifact_fingerprint:
+                resolved_artifact = await ready_target_artifact(self._policy)
+            self.identity = serving_identity(self._policy, resolved_artifact=resolved_artifact)
             self.model = DropbearModel(self._policy, self.emit)
             self.emit("provider_ready", duration_s=time.monotonic() - started, **self.identity)
             return self

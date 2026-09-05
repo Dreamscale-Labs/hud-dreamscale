@@ -109,6 +109,13 @@ camera/state/action contracts fail before actions are sent. The small
 `serving_contracts.json` registry ties verified TensorRT artifact fingerprints to
 checkpoint revisions; verify new build manifests before adding entries.
 
+On a cold start, SDK 0.1.0a15 can retain planned artifact metadata without a
+fingerprint. The provider then reads the session's exact target through the
+SDK control client and accepts its reported artifact only when there is exactly
+one ready TensorRT worker and one active session. The sidecar records both the
+session's advertised artifact ID and the verified running artifact. Multiple
+workers or sessions make this fallback ambiguous and are rejected.
+
 ## Verify
 
 ```sh
