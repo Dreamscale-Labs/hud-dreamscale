@@ -137,6 +137,35 @@ async def test_real_hud_wire_grading_reuse_and_fresh_chunks(tmp_path, monkeypatc
                 assert len(list(recording.decode(video=0))) == 3
 
 
+@pytest.mark.parametrize("action_limit", [1, 2])
+async def test_action_cap_records_final_frame_without_an_extra_action(
+    action_limit, tmp_path, monkeypatch
+):
+    import av
+    from hud.settings import settings
+
+    monkeypatch.setattr(settings, "telemetry_local_dir", str(tmp_path / "traces"))
+    policy = FakePolicy()
+
+    async def connect(**kwargs):
+        return policy
+
+    async with environment() as (env, bridge):
+        async with DropbearRobotAgent(connector=connect) as agent:
+            agent.max_steps = action_limit
+            job = await Taskset("action-cap", tasks([0], [0], max_steps=3)).run(
+                agent, runtime=LocalRuntime(env)
+            )
+        assert len(bridge.actions) == action_limit
+        assert job.runs[0].reward == (1.0 if action_limit == bridge.limit else 0.0)
+        assert summarize(job)["integration_errors"] == 0
+        videos = export_videos(tmp_path / "traces", tmp_path / "videos")
+        assert len(videos) == 2
+        for video in videos:
+            with av.open(str(tmp_path / "videos" / video["file"])) as recording:
+                assert sum(1 for _ in recording.decode(video=0)) == action_limit + 1
+
+
 async def test_malformed_model_chunk_never_reaches_simulator():
     policy = FakePolicy(bad=True)
 

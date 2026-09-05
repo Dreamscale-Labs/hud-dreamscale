@@ -152,6 +152,7 @@ class DropbearRobotAgent(RobotAgent):
         self._connector = connector or dropbear.aconnect
         self._policy = None
         self._running = False
+        self._action_limit = self.max_steps
         self._closed = False
         self._trace_id = None
         self._connect_in_background = connect_in_background
@@ -265,7 +266,11 @@ class DropbearRobotAgent(RobotAgent):
             await asyncio.shield(self._connection_task)
             self.model.trace_id = self._trace_id
             run.trace.extra["dropbear"] = dict(self.identity)
-            await super().__call__(run, max_steps=max_steps)
+            self._action_limit = self.max_steps if max_steps is None else max_steps
+            # HUD records an observation at the beginning of each tick. Reserve
+            # a final recording tick after the last permitted action; should_stop
+            # prevents that tick from sending another action.
+            await super().__call__(run, max_steps=self._action_limit + 1)
             self.emit(
                 "episode_driven", trace_id=self._trace_id, duration_s=time.monotonic() - started
             )
@@ -285,4 +290,6 @@ class DropbearRobotAgent(RobotAgent):
         if step == 1:
             # The first action has been sent and the simulator's next observation received.
             self.emit("first_action_confirmed", trace_id=self._trace_id)
-        return super().should_stop(obs, step=step, max_steps=max_steps)
+        return step >= self._action_limit or super().should_stop(
+            obs, step=step, max_steps=max_steps
+        )
