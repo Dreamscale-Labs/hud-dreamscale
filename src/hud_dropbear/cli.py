@@ -19,6 +19,7 @@ from hud.utils.platform import canonical_record_id
 
 from .agent import DropbearRobotAgent
 from .contract import ENV_NAME, MAX_STEPS, TASK_NAMES
+from .platform import verify_platform
 from .telemetry import CURRENT_TASK, Evidence
 
 
@@ -143,6 +144,8 @@ async def evaluate(args):
         runtime = Runtime(args.env_url)
     rows = tasks(args.task_ids, args.init_state_ids, max_steps=args.max_steps)
     evidence = Evidence(args.output / "timings.jsonl", started=CLI_STARTED)
+    previous_trace_dir = settings.telemetry_local_dir
+    settings.telemetry_local_dir = str((args.output / "traces").resolve())
     summary = None
     try:
         evidence.emit(
@@ -188,12 +191,22 @@ async def evaluate(args):
                 and summary["successes"] >= 1
                 and args.runtime == "hud"
             )
-            evidence.emit("job_result", **summary)
+        # Release billable inference before checking best-effort platform uploads.
+        if settings.api_key and settings.telemetry_enabled:
+            summary["platform_evidence"] = await verify_platform(summary)
+        else:
+            summary["platform_evidence"] = {"verified": False, "reason": "telemetry_disabled"}
+        summary["demo_passed"] = (
+            summary["demo_passed"] and summary["platform_evidence"]["verified"]
+        )
+        summary["local_traces"] = "traces/"
+        evidence.emit("job_result", **summary)
     except BaseException as exc:
         evidence.emit("job_error", error_type=type(exc).__name__)
         raise
     finally:
         evidence.close()
+        settings.telemetry_local_dir = previous_trace_dir
         if summary is not None:
             (args.output / "results.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

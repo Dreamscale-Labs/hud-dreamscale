@@ -59,9 +59,12 @@ Results go to a new directory under `artifacts/` (or `--output <new-directory>`)
   identity, job link and startup measurements.
 - `timings.jsonl`: per-episode startup and per-inference timing joined by task,
   trace, session and observation IDs.
+- `traces/`: complete local HUD spans, including encoded camera video segments.
 
-With HUD credentials, HUD records camera videos, state and action chunks.
-Local sidecars contain no camera payloads or credentials. CLI startup timing
+With HUD credentials, HUD records camera videos, state and action chunks. The
+runner checks the completed platform grades and both camera streams after
+closing inference. Timing sidecars contain no camera payloads or credentials;
+the separate local trace files contain the video. CLI startup timing
 begins at entry to the Python CLI module; first-action timing ends when the
 simulator acknowledges the action with its next observation. Simulator-side
 Unix timestamps are recorded separately and never subtracted from local clocks.
