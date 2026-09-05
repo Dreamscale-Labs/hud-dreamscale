@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from hud.environment.robot import RobotBridge
 
+from environments.libero.physics import check_contact_physics
 from hud_dropbear.contract import (
     CAMERAS,
     CONTROL_HZ,
@@ -22,7 +23,8 @@ from hud_dropbear.contract import (
 class LiberoBridge(RobotBridge):
     def __init__(self):
         super().__init__()
-        self.contract = build_contract()
+        self.control_hz = int(os.environ.get("LIBERO_CONTROL_HZ", CONTROL_HZ))
+        self.contract = build_contract(self.control_hz)
         self.step_timeout = 90.0
         self._env = None
         self._obs = None
@@ -30,6 +32,7 @@ class LiberoBridge(RobotBridge):
         self.reset_seconds = 0.0
         self.first_action_unix_s = None
         self.selection = {}
+        self.physics_runtime = None
 
     def reset(
         self,
@@ -49,6 +52,8 @@ class LiberoBridge(RobotBridge):
         if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
             raise ValueError("max_steps must be between 1 and 600")
         self._close_sim()
+        if self.physics_runtime is None:
+            self.physics_runtime = check_contact_physics()
         # Bootstrap is a build/setup command, never a runtime download.
         assets = Path(os.environ.get("LIBERO_ASSETS_PATH", "/opt/libero-assets"))
         if not assets.is_dir():
@@ -70,7 +75,7 @@ class LiberoBridge(RobotBridge):
             ),
             camera_heights=256,
             camera_widths=256,
-            control_freq=CONTROL_HZ,
+            control_freq=self.control_hz,
         )
         self._env.seed(seed)
         self._env.reset()
@@ -120,7 +125,8 @@ class LiberoBridge(RobotBridge):
                 **self.selection,
                 "steps": self.steps,
                 "reset_seconds": self.reset_seconds,
-                "control_hz": CONTROL_HZ,
+                "control_hz": self.control_hz,
+                "physics_runtime": self.physics_runtime,
                 "first_action_unix_s": self.first_action_unix_s,
                 "termination": "success"
                 if self.success

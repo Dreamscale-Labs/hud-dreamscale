@@ -17,6 +17,7 @@ COPY environments/libero/bootstrap.py /app/environments/libero/bootstrap.py
 RUN python environments/libero/bootstrap.py && rm -rf /root/.cache/huggingface
 COPY src /app/src
 COPY environments/libero/bridge.py /app/environments/libero/bridge.py
+COPY environments/libero/physics.py /app/environments/libero/physics.py
 COPY environments/libero/preflight.py /app/environments/libero/preflight.py
 COPY env.py /app/env.py
 EXPOSE 8765

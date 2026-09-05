@@ -54,9 +54,9 @@ class FakePolicy:
 
 
 class FakeBridge(RobotBridge):
-    def __init__(self):
+    def __init__(self, control_hz=10):
         super().__init__()
-        self.contract = build_contract()
+        self.contract = build_contract(control_hz)
         self.actions = []
         self.episodes = []
         self.selections = []
@@ -80,8 +80,8 @@ class FakeBridge(RobotBridge):
 
 
 @asynccontextmanager
-async def environment():
-    bridge = FakeBridge()
+async def environment(control_hz=10):
+    bridge = FakeBridge(control_hz)
     await bridge.start()
     server = await bridge.serve_control("127.0.0.1", 0)
     endpoint = RobotEndpoint.remote("127.0.0.1", server.sockets[0].getsockname()[1])
@@ -167,6 +167,25 @@ async def test_goal_template_preserves_distinct_task_selections():
         assert len({task.columns["task_name"] for task in selected}) == 3
         assert policy.calls == 3 and policy.closed == 1
         assert [float(ep[0][0, 0]) for ep in bridge.episodes] == [1.0, 2.0, 3.0]
+
+
+@pytest.mark.parametrize("sim_hz", [10, 20])
+async def test_explicit_control_rate_must_match_simulator(sim_hz):
+    policy = FakePolicy()
+    policy.action_hz = 20
+
+    async def connect(**kwargs):
+        assert kwargs["control_hz"] == 20
+        return policy
+
+    async with environment(control_hz=sim_hz) as (env, bridge):
+        async with DropbearRobotAgent(connector=connect, control_hz=20) as agent:
+            job = await Taskset("cadence", tasks([0], [0], max_steps=3)).run(
+                agent, runtime=LocalRuntime(env)
+            )
+        assert job.runs[0].trace.is_error == (sim_hz != 20)
+        assert len(bridge.actions) == (2 if sim_hz == 20 else 0)
+        assert policy.closed == 1
 
 
 async def test_inference_failure_releases_claim_and_session():

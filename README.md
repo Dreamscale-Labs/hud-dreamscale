@@ -35,6 +35,22 @@ locked dependencies include CPU PyTorch only for LIBERO's initial-state loading;
 no policy weights are installed there. Assets are pinned and downloaded during
 the build, so episode startup does not download them.
 
+Build and run the local simulator for the host's native CPU architecture. In
+particular, do not run the Intel (`linux/amd64`) deployment image under Rosetta
+on Apple Silicon. We reproduced incorrect MuJoCo contacts there: LIBERO objects
+fell through the table before the first model action. Identical pinned scenes
+and initial states remained supported on native ARM with MuJoCo 3.3.7. Each
+simulator process now checks a falling box's resting height before loading a
+task and rejects invalid physics. The grade records the checked runtime and
+architecture. Run this inexpensive check independently with:
+
+```sh
+docker run --rm hud-dropbear-libero:local python -m environments.libero.physics
+```
+
+The full preflight above also checks rendering and the robot protocol; a camera
+image alone is insufficient evidence that simulation physics is valid.
+
 To run all six episodes, omit the task-selection options. For an already-served
 HUD environment use `--runtime attached --env-url tcp://127.0.0.1:8765`.
 
@@ -99,6 +115,13 @@ gripper positions. Actions use LIBERO's native seven-value delta-EEF control.
 Raw 256×256 RGB agent/wrist cameras are passed to Dropbear, which performs its
 rotation, resize and encoding once. HUD traces preserve the raw camera orientation.
 RTC and calibration are off because HUD drives a synchronous chunk loop.
+
+For an explicit cadence comparison, `--runtime docker --control-hz 20` configures
+both the simulator and SDK execution contract to 20 Hz, the upstream LIBERO
+environment default. An attached environment must be started with
+`LIBERO_CONTROL_HZ=20` and the runner must use `--control-hz 20`; mismatches fail
+before inference. The selected rate is recorded in simulator grades and provider
+metadata. These comparative runs do not pass the default 10 Hz hosted-demo gate.
 
 The demo passes when the six HUD-hosted episodes have no integration errors and
 at least one simulator-confirmed success. Every attempt is retained. A lower

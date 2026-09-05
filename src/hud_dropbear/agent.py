@@ -56,13 +56,13 @@ async def ready_target_artifact(policy, *, client_factory=ControlPlaneClient):
     }
 
 
-def serving_identity(policy, *, resolved_artifact=None):
+def serving_identity(policy, *, resolved_artifact=None, control_hz=CONTROL_HZ):
     config = policy.resolved_optimization_config
     if policy.model != MODEL or config.backend != "tensorrt":
         raise ValueError("The demo requires MolmoAct2-LIBERO served with TensorRT")
     if config.rtc != "off" or config.calibration != "off":
         raise ValueError("The synchronous HUD baseline requires RTC and calibration off")
-    if (policy.action_hz, policy.chunk_size) != (CONTROL_HZ, CHUNK_SIZE):
+    if (policy.action_hz, policy.chunk_size) != (control_hz, CHUNK_SIZE):
         raise ValueError("Dropbear's resolved LIBERO timing contract has changed")
     fingerprint = (
         resolved_artifact["fingerprint"]
@@ -135,7 +135,12 @@ class DropbearRobotAgent(RobotAgent):
     max_steps = MAX_STEPS
     log_every = 50
 
-    def __init__(self, *, region="ap-southeast-2", emit=None, connector=None):
+    def __init__(
+        self, *, region="ap-southeast-2", control_hz=CONTROL_HZ, emit=None, connector=None
+    ):
+        if control_hz not in (10, 20):
+            raise ValueError("Supported LIBERO control rates are 10 and 20 Hz")
+        self.control_hz = control_hz
         self.region = region
         self.emit = emit or (lambda event, **fields: None)
         self._connector = connector or dropbear.aconnect
@@ -159,7 +164,7 @@ class DropbearRobotAgent(RobotAgent):
                 acceleration="tensorrt",
                 rtc="off",
                 calibration="off",
-                control_hz=CONTROL_HZ,
+                control_hz=self.control_hz,
                 keep_warm=0,
                 idle_timeout=900,
                 startup_timeout=900,
@@ -168,7 +173,9 @@ class DropbearRobotAgent(RobotAgent):
             resolved_artifact = None
             if not self._policy.resolved_optimization_config.tensorrt_artifact_fingerprint:
                 resolved_artifact = await ready_target_artifact(self._policy)
-            self.identity = serving_identity(self._policy, resolved_artifact=resolved_artifact)
+            self.identity = serving_identity(
+                self._policy, resolved_artifact=resolved_artifact, control_hz=self.control_hz
+            )
             self.model = DropbearModel(self._policy, self.emit)
             self.emit("provider_ready", duration_s=time.monotonic() - started, **self.identity)
             return self
@@ -206,8 +213,10 @@ class DropbearRobotAgent(RobotAgent):
         try:
             cap = run.client.binding(self.robot_protocol)
             contract = cap.params.get("contract") or {}
-            if contract.get("control_rate") != CONTROL_HZ:
-                raise ValueError("The actual LIBERO environment control rate must be 10 Hz")
+            if contract.get("control_rate") != self.control_hz:
+                raise ValueError(
+                    f"The actual LIBERO environment control rate must be {self.control_hz} Hz"
+                )
             self.emit("environment_ready", trace_id=self._trace_id)
             run.trace.extra["dropbear"] = dict(self.identity)
             await super().__call__(run, max_steps=max_steps)

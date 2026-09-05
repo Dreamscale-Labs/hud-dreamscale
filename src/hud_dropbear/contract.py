@@ -43,10 +43,12 @@ GOAL_TASK_NAMES = (
 TASK_SUITES = {"libero_spatial": TASK_NAMES, "libero_goal": GOAL_TASK_NAMES}
 
 
-def build_contract():
+def build_contract(control_hz=CONTROL_HZ):
+    if control_hz not in (10, 20):
+        raise ValueError("Supported LIBERO control rates are 10 and 20 Hz")
     return {
         "robot_type": "libero_franka",
-        "control_rate": CONTROL_HZ,
+        "control_rate": control_hz,
         "features": {
             **{
                 key: {
@@ -86,6 +88,16 @@ def finite_array(value, shape, label):
     if array.shape != shape or not np.isfinite(array).all():
         raise ValueError(f"{label} must be a finite array of shape {shape}; got {array.shape}")
     return array
+
+
+def validate_contact_height(height):
+    """A settled 1 cm box must sit on a platform whose surface is at 0.9 m."""
+    if not np.isfinite(height) or abs(float(height) - 0.905) > 0.001:
+        raise RuntimeError(
+            f"Invalid MuJoCo contact physics: box center is {height:.6f} m; "
+            "expected 0.905 m within 1 mm. Run the simulator on its native CPU "
+            "architecture; x86 Linux under Rosetta failed this check."
+        )
 
 
 def state_from_raw(obs):

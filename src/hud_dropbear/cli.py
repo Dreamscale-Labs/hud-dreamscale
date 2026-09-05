@@ -18,7 +18,7 @@ from hud.settings import settings
 from hud.utils.platform import canonical_record_id
 
 from .agent import DropbearRobotAgent
-from .contract import ENV_NAME, MAX_STEPS, TASK_SUITES
+from .contract import CONTROL_HZ, ENV_NAME, MAX_STEPS, TASK_SUITES
 from .platform import verify_platform
 from .telemetry import CURRENT_TASK, Evidence
 from .video import export_videos
@@ -138,7 +138,7 @@ async def evaluate(args):
     if args.runtime == "hud" and not settings.api_key:
         raise ValueError("HUD-hosted simulation requires a configured HUD API key")
     if args.runtime == "docker":
-        runtime = DockerRuntime(args.image)
+        runtime = DockerRuntime(args.image, env_vars={"LIBERO_CONTROL_HZ": str(args.control_hz)})
     elif args.runtime == "hud":
         runtime = HUDRuntime()
     else:
@@ -164,7 +164,7 @@ async def evaluate(args):
                 "hf_libero": "0.1.3",
                 "assets_revision": "0b3ea86be5fe169d0fd036ae63d1070ec09e90f6",
                 "mujoco": "3.3.7",
-                "control_hz": 10,
+                "control_hz": args.control_hz,
                 "settling_steps": 10,
                 "chunk_size": 10,
             },
@@ -173,7 +173,9 @@ async def evaluate(args):
                 for n in ("hud-dropbear", "hud", "dropbear", "numpy")
             },
         )
-        async with DropbearRobotAgent(region=args.region, emit=evidence.emit) as agent:
+        async with DropbearRobotAgent(
+            region=args.region, control_hz=args.control_hz, emit=evidence.emit
+        ) as agent:
             job = await Taskset(f"dropbear-{args.suite}-{args.runtime}", rows).run(
                 agent,
                 runtime=MeasuredRuntime(runtime, evidence.emit),
@@ -194,6 +196,7 @@ async def evaluate(args):
                 and summary["integration_errors"] == 0
                 and summary["successes"] >= 1
                 and args.runtime == "hud"
+                and args.control_hz == CONTROL_HZ
                 and args.suite == "libero_spatial"
                 and sorted(args.task_ids) == [0, 1, 2]
                 and sorted(args.init_state_ids) == [0, 1]
@@ -225,6 +228,13 @@ def parser():
     p.add_argument("--image", default="hud-dropbear-libero:local")
     p.add_argument("--env-url", help="HUD control URL for --runtime attached")
     p.add_argument("--suite", choices=TASK_SUITES, default="libero_spatial")
+    p.add_argument(
+        "--control-hz",
+        type=int,
+        choices=(10, 20),
+        default=CONTROL_HZ,
+        help="Actual simulator control rate; attached environments must use the same rate",
+    )
     p.add_argument("--region", default="ap-southeast-2", choices=("ap-southeast-2", "us-west-2"))
     p.add_argument("--task-ids", type=int, nargs="+", choices=range(10), default=[0, 1, 2])
     p.add_argument("--init-state-ids", type=int, nargs="+", choices=(0, 1), default=[0, 1])
