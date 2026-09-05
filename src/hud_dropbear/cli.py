@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import importlib.metadata
 import json
+import subprocess
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -19,6 +20,26 @@ from hud.utils.platform import canonical_record_id
 from .agent import DropbearRobotAgent
 from .contract import ENV_NAME, MAX_STEPS, TASK_NAMES
 from .telemetry import CURRENT_TASK, Evidence
+
+
+def source_revision():
+    """Record an editable checkout's identity; wheels need not have Git installed."""
+    root = Path(__file__).resolve().parents[2]
+    if not (root / ".git").exists():
+        return None
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True, timeout=5
+        ).strip()
+        dirty = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=root,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"revision": revision, "modified_tracked_files": bool(dirty)}
 
 
 class MeasuredRuntime:
@@ -127,6 +148,7 @@ async def evaluate(args):
         evidence.emit(
             "job_start",
             runtime=args.runtime,
+            source=source_revision(),
             task_count=len(rows),
             max_steps=args.max_steps,
             image=args.image if args.runtime == "docker" else None,
