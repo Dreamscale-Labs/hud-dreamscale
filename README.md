@@ -96,11 +96,12 @@ To choose a different task in each suite, use the portable HUD taskset:
 uv run hud-dropbear --runtime hud --taskset tasksets/five-suites.json
 ```
 
-It selects task 0 in the first four suites and task 9 (bowl onto plate) in
+It selects task 0 in the first four suites and task 50 (alphabet soup into basket) in
 `libero_90`, all at initial state 0. The taskset loader checks numeric IDs,
-task names, seed and action limit, and records the file's checksum. The earlier
-LIBERO-90 task-0 drawer attempt remains a reported failure; changing selection
-does not remove it from the evidence.
+task names, seed and action limit, and records the file's checksum. These cases
+each succeeded in the hosted campaign across two jobs. The earlier LIBERO-90
+task-0 drawer failure and task-9 bowl-placement failures at initial states 0 and 1
+remain in the report; changing the example selection does not remove attempts.
 
 The all-suite acceptance result requires at least one simulator-graded success
 in each suite, no integration errors, verified HUD traces, hosted simulation,

@@ -12,9 +12,9 @@ SOURCE = Path(__file__).resolve().parents[1] / "tasksets/five-suites.json"
 def test_portable_hud_taskset_selects_distinct_tasks_per_suite():
     rows = selected_tasks(parser().parse_args(["--taskset", str(SOURCE)]))
     assert [row.id for row in rows] == list(TASK_SUITES)
-    assert [row.args["task_id"] for row in rows] == [0, 0, 0, 0, 9]
+    assert [row.args["task_id"] for row in rows] == [0, 0, 0, 0, 50]
     assert all(row.args["max_steps"] == 600 for row in rows)
-    assert rows[-1].columns["task_name"] == TASK_SUITES["libero_90"][9]
+    assert rows[-1].columns["task_name"] == TASK_SUITES["libero_90"][50]
 
 
 @pytest.mark.parametrize("field,value", [("task_id", True), ("max_steps", 1), ("seed", 3)])

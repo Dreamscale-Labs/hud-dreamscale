@@ -63,14 +63,14 @@
     "env": "dropbear-libero",
     "id": "libero_90",
     "args": {
-      "task_id": 9,
+      "task_id": 50,
       "init_state_id": 0,
       "seed": 0,
       "max_steps": 600
     },
-    "slug": "libero_90-73865177",
+    "slug": "libero_90-6e257fd8",
     "columns": {
-      "task_name": "KITCHEN_SCENE1_put_the_black_bowl_on_the_plate",
+      "task_name": "LIVING_ROOM_SCENE2_pick_up_the_alphabet_soup_and_put_it_in_the_basket",
       "model": "molmoact2-libero"
     }
   }
