@@ -8,7 +8,9 @@ MODEL = "molmoact2-libero"
 CHECKPOINT = "allenai/MolmoAct2-LIBERO"
 REVISION = "0d24a92bd1faf321ef497c3bbd5681af97c65aa2"
 ENV_NAME = "dropbear-libero"
-CONTROL_HZ = 10
+# LIBERO reference controller cadence. This is simulation time per action,
+# independent of network latency and the published SDK sim profile's default.
+CONTROL_HZ = 20
 CHUNK_SIZE = 10
 MAX_STEPS = 600
 CAMERAS = ("agentview_image", "robot0_eye_in_hand_image")

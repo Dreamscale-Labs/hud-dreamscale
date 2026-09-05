@@ -11,7 +11,7 @@ from hud.environment.robot import RobotBridge, RobotEndpoint
 from env import create_environment
 from hud_dropbear.agent import DropbearRobotAgent
 from hud_dropbear.cli import MeasuredRuntime, startup_metrics, summarize, tasks
-from hud_dropbear.contract import CAMERAS, MODEL, build_contract
+from hud_dropbear.contract import CAMERAS, CONTROL_HZ, MODEL, build_contract
 from hud_dropbear.video import export_videos
 
 
@@ -19,7 +19,7 @@ class FakePolicy:
     model = MODEL
     session_id = "test-session"
     region = "ap-southeast-2"
-    action_hz = 10
+    action_hz = CONTROL_HZ
     chunk_size = 10
     transport_mode = "quic"
 
@@ -54,7 +54,7 @@ class FakePolicy:
 
 
 class FakeBridge(RobotBridge):
-    def __init__(self, control_hz=10):
+    def __init__(self, control_hz=CONTROL_HZ):
         super().__init__()
         self.contract = build_contract(control_hz)
         self.actions = []
@@ -80,7 +80,7 @@ class FakeBridge(RobotBridge):
 
 
 @asynccontextmanager
-async def environment(control_hz=10):
+async def environment(control_hz=CONTROL_HZ):
     bridge = FakeBridge(control_hz)
     await bridge.start()
     server = await bridge.serve_control("127.0.0.1", 0)
@@ -120,6 +120,7 @@ async def test_real_hud_wire_grading_reuse_and_fresh_chunks(tmp_path, monkeypatc
         assert summarize(job)["integration_errors"] == 0
         assert all(not r.trace.is_error for r in job.runs)
         assert len(connects) == 1 and policy.calls == 2 and policy.closed == 1
+        assert connects[0]["control_hz"] == 20
         assert connects[0]["keep_warm"] == 0
         assert [float(ep[0][0, 0]) for ep in bridge.episodes] == [1.0, 2.0]
         assert bridge._registry.all_free

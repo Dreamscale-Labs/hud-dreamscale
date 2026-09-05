@@ -54,6 +54,25 @@ image alone is insufficient evidence that simulation physics is valid.
 To run all six episodes, omit the task-selection options. For an already-served
 HUD environment use `--runtime attached --env-url tcp://127.0.0.1:8765`.
 
+On Apple Silicon, native macOS simulation is an alternative while validating a
+native container. It uses CGL rendering, so it does not satisfy the CPU/OSMesa
+container check. From the repository root, prepare the isolated simulator once:
+
+```sh
+uv sync --project environments/libero --locked --no-dev
+export PYTHONPATH="$PWD/src:$PWD"
+export LIBERO_ASSETS_PATH="$PWD/artifacts/libero-assets"
+export LIBERO_CONFIG_PATH="$PWD/artifacts/libero-config"
+export LIBERO_ASSETS_REVISION=0b3ea86be5fe169d0fd036ae63d1070ec09e90f6
+export MUJOCO_GL=cgl
+uv run --project environments/libero python -m environments.libero.bootstrap
+uv run --project environments/libero hud serve env.py --host 127.0.0.1 --port 8765
+```
+
+Keep that server running and use `uv run hud-dropbear --runtime attached
+--env-url tcp://127.0.0.1:8765` in another terminal. The server and runner default
+to 20 Hz. This remains local simulation with HUD traces, not HUD-hosted execution.
+
 For distinct manipulation tasks, the same environment also exposes the ten
 `libero_goal` tasks in task-order 0. For example, evaluate drawer opening, pushing
 a plate, placing cream cheese in a bowl, turning on the stove, and placing a wine
@@ -109,19 +128,28 @@ with initial-state IDs 0 and 1. Names are checked against the pinned package:
 pick up the black bowl between the plate and ramekin, next to the ramekin, and
 at table center, placing it on the plate.
 
-The environment uses 10 Hz actual control, ten settling steps, ten-action
+The environment uses 20 Hz actual control, ten settling steps, ten-action
 chunks and a 600-action limit. State is EEF XYZ, axis-angle radians and two
 gripper positions. Actions use LIBERO's native seven-value delta-EEF control.
 Raw 256×256 RGB agent/wrist cameras are passed to Dropbear, which performs its
 rotation, resize and encoding once. HUD traces preserve the raw camera orientation.
 RTC and calibration are off because HUD drives a synchronous chunk loop.
 
-For an explicit cadence comparison, `--runtime docker --control-hz 20` configures
-both the simulator and SDK execution contract to 20 Hz, the upstream LIBERO
-environment default. An attached environment must be started with
-`LIBERO_CONTROL_HZ=20` and the runner must use `--control-hz 20`; mismatches fail
-before inference. The selected rate is recorded in simulator grades and provider
-metadata. These comparative runs do not pass the default 10 Hz hosted-demo gate.
+The initial integration used the SDK simulation profile's 10 Hz setting. It now
+explicitly requests 20 Hz from the simulator and SDK, matching the default
+controller in the [reference LIBERO environment](https://github.com/Lifelong-Robot-Learning/LIBERO/blob/master/libero/libero/envs/env_wrapper.py).
+This changes simulated dynamics, not just playback speed. In a recorded-action
+replay, 20 Hz reproduced a successful rollout exactly; the same actions at 10 Hz
+failed, with up to 20.6 cm end-effector trajectory divergence. The six-case
+hosted-demo protocol is therefore amended to 20 Hz; earlier 10 Hz attempts retain
+their original provenance and results.
+
+For a diagnostic comparison, `--runtime docker --control-hz 10` configures both
+sides to the old rate. An attached environment must be started with the same
+`LIBERO_CONTROL_HZ` value as the runner; mismatches fail before inference. The
+selected rate is recorded in simulator grades and provider metadata. A 10 Hz
+comparison does not pass the corrected hosted-demo gate. Rebuild and redeploy
+older environment images before using the new default.
 
 The demo passes when the six HUD-hosted episodes have no integration errors and
 at least one simulator-confirmed success. Every attempt is retained. A lower

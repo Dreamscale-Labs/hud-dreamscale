@@ -26,7 +26,8 @@ def main():
                 assert frame.std() > 1, "Rendering produced a blank camera image"
             assert observations["state"].shape == (1, 8)
             assert np.isfinite(observations["state"]).all()
-            assert bridge._env.env.control_freq == 10
+            assert bridge._env.env.control_freq == bridge.control_hz
+            assert bridge.contract["control_rate"] == bridge.control_hz
             for _ in range(2):
                 bridge.step(np.array([[0.0] * 6 + [-1.0]], dtype=np.float32))
             _, done = bridge.get_observation()
