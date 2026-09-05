@@ -48,6 +48,12 @@ architecture. Run this inexpensive check independently with:
 docker run --rm hud-dropbear-libero:local python -m environments.libero.physics
 ```
 
+The corrected image has passed native Linux/amd64 CPU/OSMesa preflight and all
+30 integration tests, including HUD's actual robot protocol and grading loop.
+A model-free replay reproduced a successful 79-action trajectory from the native
+Mac simulator, with maximum state difference `1.49e-8`. This validates simulator
+behavior; new model artifacts still require their own closed-loop evaluations.
+
 The full preflight above also checks rendering and the robot protocol; a camera
 image alone is insufficient evidence that simulation physics is valid.
 
