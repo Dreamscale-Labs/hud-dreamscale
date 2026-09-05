@@ -98,11 +98,13 @@ combining run reports. This demonstrates integration coverage, not benchmark-wid
 accuracy or unseen-task generalization.
 
 The runner starts inference and simulator provisioning concurrently, then waits
-for verified model identity before submitting any observations. One HUD `Shared`
-runtime and one inference connection remain open for the sequential job; each
+for verified model identity before submitting any observations. One simulator
+lease and one inference connection remain open for the sequential job; each
 episode resets the simulator, robot claim and action queue. Both resources close
 when the job exits, including on failure or cancellation. This avoids repeating
 container/model startup for every episode. The retained resources remain billable.
+The HUD lease is created outside individual trace scopes so completing one trace
+does not complete the shared environment's lifetime.
 
 ## HUD-hosted simulation
 

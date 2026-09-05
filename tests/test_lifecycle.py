@@ -11,7 +11,7 @@ from hud.eval import Shared
 
 from env import create_environment
 from hud_dropbear.agent import DropbearRobotAgent
-from hud_dropbear.cli import MeasuredRuntime, startup_metrics, summarize, tasks
+from hud_dropbear.cli import MeasuredRuntime, job_runtime, startup_metrics, summarize, tasks
 from hud_dropbear.contract import CAMERAS, CONTROL_HZ, MODEL, build_contract
 from hud_dropbear.video import export_videos
 
@@ -318,6 +318,9 @@ async def test_background_connection_overlaps_shared_environment_and_resets_epis
         @asynccontextmanager
         async def provider(task):
             nonlocal opened, closed
+            from hud.telemetry.context import get_current_trace_id
+
+            assert get_current_trace_id() is None
             opened += 1
             try:
                 async with LocalRuntime(env)(task) as address:
@@ -328,7 +331,7 @@ async def test_background_connection_overlaps_shared_environment_and_resets_epis
         rows = [row for suite in TASK_SUITES for row in tasks([0], [0], suite=suite)]
         async with (
             DropbearRobotAgent(connector=connect, emit=emit, connect_in_background=True) as agent,
-            Shared(provider, width=1) as shared,
+            job_runtime(provider, rows[0], emit) as shared,
         ):
             job = await Taskset("overlapped-reuse", rows).run(
                 agent, runtime=MeasuredRuntime(shared, emit), max_concurrent=1

@@ -14,7 +14,6 @@ from pathlib import Path
 CLI_STARTED = time.monotonic()
 
 from hud import DockerRuntime, HUDRuntime, Runtime, Task, Taskset
-from hud.eval import Shared
 from hud.settings import settings
 from hud.utils.platform import canonical_record_id
 
@@ -63,6 +62,19 @@ class MeasuredRuntime:
             # HUD may exit the runtime in a shielded cleanup task after an
             # exception. ContextVar tokens cannot be reset in that copied context.
             CURRENT_TASK.set(previous)
+
+
+@asynccontextmanager
+async def job_runtime(provider, first_task, emit):
+    # Lease outside an individual trace: HUD associates a lease created inside
+    # a trace with that trace's completion, even when wrapped in Shared.
+    emit("simulator_starting")
+    try:
+        async with provider(first_task) as runtime:
+            emit("simulator_acquired", runtime_session_id=runtime.params.get("session_id"))
+            yield runtime
+    finally:
+        emit("simulator_closed")
 
 
 def startup_metrics(events):
@@ -189,7 +201,7 @@ async def evaluate(args):
                 emit=evidence.emit,
                 connect_in_background=True,
             ) as agent,
-            Shared(runtime, width=1) as shared_runtime,
+            job_runtime(runtime, rows[0], evidence.emit) as shared_runtime,
         ):
             job = await Taskset(
                 f"dropbear-{'all-suites' if args.all_suites else args.suite}-{args.runtime}", rows
