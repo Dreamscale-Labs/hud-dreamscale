@@ -19,7 +19,14 @@ class Evidence:
     def emit(self, event, **fields):
         if CURRENT_TASK.get() is not None:
             fields.setdefault("task", CURRENT_TASK.get())
-        row = {"event": event, "elapsed_s": time.monotonic() - self.started, **fields}
+        now = time.monotonic()
+        row = {
+            "event": event,
+            "elapsed_s": now - self.started,
+            "monotonic_s": now,
+            "unix_s": time.time(),
+            **fields,
+        }
         self._file.write(json.dumps(row, allow_nan=False) + "\n")
         self._file.flush()
         self.rows.append(row)

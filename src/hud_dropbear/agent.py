@@ -169,7 +169,24 @@ class DropbearRobotAgent(RobotAgent):
                 idle_timeout=900,
                 startup_timeout=900,
             )
-            self.emit("provider_connected", duration_s=time.monotonic() - started)
+            self.emit(
+                "provider_connected",
+                duration_s=time.monotonic() - started,
+                sdk_connection_milestones={
+                    key: value
+                    for key, value in getattr(
+                        self._policy, "_connection_timing_monotonic", {}
+                    ).items()
+                    if key
+                    in {
+                        "session_create_started_at",
+                        "session_id_received_at",
+                        "session_ready_at",
+                        "transport_connected_at",
+                    }
+                    and isinstance(value, (int, float))
+                },
+            )
             resolved_artifact = None
             if not self._policy.resolved_optimization_config.tensorrt_artifact_fingerprint:
                 resolved_artifact = await ready_target_artifact(self._policy)
