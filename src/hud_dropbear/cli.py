@@ -52,14 +52,17 @@ class MeasuredRuntime:
 
     @asynccontextmanager
     async def __call__(self, task):
-        token = CURRENT_TASK.set(task.slug)
+        previous = CURRENT_TASK.get()
+        CURRENT_TASK.set(task.slug)
         try:
             self.emit("environment_starting", task=task.slug)
             async with self.provider(task) as runtime:
                 self.emit("environment_acquired", task=task.slug)
                 yield runtime
         finally:
-            CURRENT_TASK.reset(token)
+            # HUD may exit the runtime in a shielded cleanup task after an
+            # exception. ContextVar tokens cannot be reset in that copied context.
+            CURRENT_TASK.set(previous)
 
 
 def startup_metrics(events):

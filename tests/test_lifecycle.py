@@ -378,3 +378,26 @@ async def test_background_identity_failure_closes_without_sending_actions():
         assert job.runs[0].trace.is_error
         assert policy.closed == 1 and policy.calls == 0
         assert bridge.actions == [] and bridge._registry.all_free
+
+
+async def test_measured_shared_cleanup_preserves_the_original_inference_error():
+    from hud_dropbear.telemetry import CURRENT_TASK
+
+    policy = FakePolicy(bad=True)
+
+    async def connect(**kwargs):
+        return policy
+
+    async with environment() as (env, bridge):
+        async with (
+            DropbearRobotAgent(connector=connect) as agent,
+            Shared(LocalRuntime(env), width=1) as shared,
+        ):
+            job = await Taskset("malformed-shared-response", tasks([0], [0])).run(
+                agent, runtime=MeasuredRuntime(shared, lambda *a, **kw: None)
+            )
+        assert job.runs[0].trace.is_error
+        assert "Context" not in str(job.runs[0].trace.error)
+        assert "finite" in str(job.runs[0].trace.error)
+        assert bridge._registry.all_free and policy.closed == 1
+        assert CURRENT_TASK.get() is None
