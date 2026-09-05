@@ -8,7 +8,9 @@ from hud_dropbear.contract import ENV_NAME, MAX_STEPS
 
 
 def create_environment(endpoint=None):
-    environment = Environment(name=ENV_NAME)
+    # HUD deploy discovers names statically, so the declaration must be literal.
+    environment = Environment(name="dropbear-libero")
+    assert environment.name == ENV_NAME
     endpoint = (endpoint or RobotEndpoint(LiberoBridge())).attach(environment)
 
     @environment.initialize

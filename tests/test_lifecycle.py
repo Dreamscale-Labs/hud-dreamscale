@@ -117,6 +117,9 @@ async def test_real_hud_wire_grading_reuse_and_fresh_chunks():
         assert [float(ep[0][0, 0]) for ep in bridge.episodes] == [1.0, 2.0]
         assert bridge._registry.all_free
         assert len([e for e, _ in events if e == "first_action_confirmed"]) == 2
+        inference_ids = [fields["trace_id"] for event, fields in events if event == "inference"]
+        assert inference_ids == [run.trace_id for run in job.runs]
+        assert all(inference_ids)
 
 
 async def test_malformed_model_chunk_never_reaches_simulator():

@@ -11,6 +11,7 @@ from dropbear.config import load_config
 from dropbear.control import ControlPlaneClient
 from hud.agents.robot.agent import RobotAgent
 from hud.agents.robot.model import Model
+from hud.telemetry.context import get_current_trace_id
 
 from .adapter import LiberoAdapter
 from .contract import CHECKPOINT, CHUNK_SIZE, CONTROL_HZ, MAX_STEPS, MODEL, REVISION, finite_array
@@ -122,6 +123,8 @@ class DropbearModel(Model):
             session_id=self.policy.session_id,
             observation_id=result.observation_id,
             chunk_id=result.chunk_id,
+            transport=self.policy.transport_mode,
+            fallback_reason=getattr(self.policy, "fallback_reason", None),
             duration_s=time.monotonic() - started,
             timing=asdict(result.timing),
         )
@@ -196,7 +199,8 @@ class DropbearRobotAgent(RobotAgent):
         if self._running:
             raise RuntimeError("This provider supports one rollout at a time; max_concurrent=1")
         self._running = True
-        self._trace_id = run.trace_id
+        # HUD assigns run.trace_id at rollout exit; the active ID lives in context.
+        self._trace_id = run.trace_id or get_current_trace_id()
         self.model.trace_id = self._trace_id
         started = time.monotonic()
         try:
@@ -216,6 +220,8 @@ class DropbearRobotAgent(RobotAgent):
         finally:
             self._running = False
             self.model.trace_id = None
+            self.identity["final_transport"] = self._policy.transport_mode
+            self.identity["fallback_reason"] = getattr(self._policy, "fallback_reason", None)
 
     def should_stop(self, obs, *, step, max_steps):
         if step == 1:
