@@ -14,6 +14,8 @@ def export_videos(trace_directory: Path, destination: Path):
         for line in source.read_text().splitlines():
             span = json.loads(line)
             payload = span.get("attributes", {}).get("hud.payload", {})
+            if not isinstance(payload, dict):
+                continue
             if payload.get("source") != "video_segment" or payload.get("camera") not in CAMERAS:
                 continue
             camera = payload["camera"]
