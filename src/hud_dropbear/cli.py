@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import hashlib
 import importlib.metadata
 import json
 import subprocess
@@ -125,6 +126,40 @@ def tasks(
     ]
 
 
+def selected_tasks(args):
+    if args.taskset is None:
+        suites = list(TASK_SUITES) if args.all_suites else [args.suite]
+        return [
+            row
+            for suite in suites
+            for row in tasks(
+                args.task_ids, args.init_state_ids, max_steps=args.max_steps, suite=suite
+            )
+        ]
+    if args.taskset.suffix not in {".json", ".jsonl"}:
+        raise ValueError("--taskset requires HUD JSON or JSONL data")
+    rows = list(Taskset.from_file(args.taskset))
+    if not rows:
+        raise ValueError("The taskset is empty")
+    for row in rows:
+        if row.env != ENV_NAME or row.id not in TASK_SUITES:
+            raise ValueError("Every row must select a pinned dropbear-libero suite")
+        if row.runtime_config is not None or row.verifier is not None:
+            raise ValueError("Taskset placement and grading must use the demo environment")
+        if set(row.args) != {"task_id", "init_state_id", "seed", "max_steps"}:
+            raise ValueError("Each row requires task_id, init_state_id, seed and max_steps")
+        if any(type(value) is not int for value in row.args.values()):
+            raise ValueError("Task selection values must be integers")
+        tid = row.args["task_id"]
+        if not 0 <= tid < len(TASK_SUITES[row.id]) or row.args["init_state_id"] not in (0, 1):
+            raise ValueError("Task or initial state is outside the pinned demo selection")
+        if row.args["seed"] != 0 or row.args["max_steps"] != args.max_steps:
+            raise ValueError("Taskset seed and action limit must match the demo contract")
+        if row.columns.get("task_name") != TASK_SUITES[row.id][tid]:
+            raise ValueError("Taskset task_name does not match the pinned numeric ID")
+    return rows
+
+
 def summarize(job, task_rows=()):
     selections = {task.slug: task.args for task in task_rows}
     runs = []
@@ -161,12 +196,8 @@ async def evaluate(args):
         if not args.env_url:
             raise ValueError("--env-url is required for an already-running environment")
         runtime = Runtime(args.env_url)
-    suites = list(TASK_SUITES) if args.all_suites else [args.suite]
-    rows = [
-        row
-        for suite in suites
-        for row in tasks(args.task_ids, args.init_state_ids, max_steps=args.max_steps, suite=suite)
-    ]
+    rows = selected_tasks(args)
+    suites = list(dict.fromkeys(row.id for row in rows))
     evidence = Evidence(args.output / "timings.jsonl", started=CLI_STARTED)
     previous_trace_dir = settings.telemetry_local_dir
     settings.telemetry_local_dir = str((args.output / "traces").resolve())
@@ -178,6 +209,9 @@ async def evaluate(args):
             suites=suites,
             source=source_revision(),
             task_count=len(rows),
+            taskset_sha256=hashlib.sha256(args.taskset.read_bytes()).hexdigest()
+            if args.taskset
+            else None,
             max_steps=args.max_steps,
             image=args.image if args.runtime == "docker" else None,
             hud_revision="0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
@@ -204,7 +238,7 @@ async def evaluate(args):
             job_runtime(runtime, rows[0], evidence.emit) as shared_runtime,
         ):
             job = await Taskset(
-                f"dropbear-{'all-suites' if args.all_suites else args.suite}-{args.runtime}", rows
+                f"dropbear-{'all-suites' if len(suites) == 5 else suites[0]}-{args.runtime}", rows
             ).run(
                 agent,
                 runtime=MeasuredRuntime(shared_runtime, evidence.emit),
@@ -243,7 +277,7 @@ async def evaluate(args):
                 and sorted(args.task_ids) == [0, 1, 2]
                 and sorted(args.init_state_ids) == [0, 1]
             )
-            if args.all_suites:
+            if set(suites) == set(TASK_SUITES):
                 summary["demo_passed"] = (
                     args.runtime == "hud"
                     and args.control_hz == CONTROL_HZ
@@ -281,6 +315,9 @@ def parser():
     p.add_argument("--suite", choices=TASK_SUITES, default="libero_spatial")
     p.add_argument("--all-suites", action="store_true", help="Evaluate all five LIBERO suites")
     p.add_argument(
+        "--taskset", type=Path, help="Pinned HUD JSON/JSONL rows; replaces numeric selections"
+    )
+    p.add_argument(
         "--control-hz",
         type=int,
         choices=(10, 20),
@@ -309,10 +346,13 @@ def parser():
 def main():
     args = parser().parse_args()
     suites = list(TASK_SUITES) if args.all_suites else [args.suite]
-    if any(tid >= len(TASK_SUITES[suite]) for suite in suites for tid in args.task_ids):
+    if args.taskset is None and any(
+        tid >= len(TASK_SUITES[suite]) for suite in suites for tid in args.task_ids
+    ):
         raise SystemExit("Task ID is outside the supported suite's pinned task manifest")
-    if len(set(args.task_ids)) != len(args.task_ids) or len(set(args.init_state_ids)) != len(
-        args.init_state_ids
+    if args.taskset is None and (
+        len(set(args.task_ids)) != len(args.task_ids)
+        or len(set(args.init_state_ids)) != len(args.init_state_ids)
     ):
         raise SystemExit("Task and initial-state selections must not contain duplicates")
     try:

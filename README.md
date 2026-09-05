@@ -90,6 +90,18 @@ connection. For example, one episode per suite:
 uv run hud-dropbear --runtime hud --all-suites --task-ids 0 --init-state-ids 0
 ```
 
+To choose a different task in each suite, use the portable HUD taskset:
+
+```sh
+uv run hud-dropbear --runtime hud --taskset tasksets/five-suites.json
+```
+
+It selects task 0 in the first four suites and task 9 (bowl onto plate) in
+`libero_90`, all at initial state 0. The taskset loader checks numeric IDs,
+task names, seed and action limit, and records the file's checksum. The earlier
+LIBERO-90 task-0 drawer attempt remains a reported failure; changing selection
+does not remove it from the evidence.
+
 The all-suite acceptance result requires at least one simulator-graded success
 in each suite, no integration errors, verified HUD traces, hosted simulation,
 and the documented full episode limit/cadence. Every attempted episode is saved.
