@@ -1,4 +1,12 @@
 {
+  "714f89f13e8d3ede87af7049": {
+    "checkpoint": "allenai/MolmoAct2-LIBERO",
+    "revision": "0d24a92bd1faf321ef497c3bbd5681af97c65aa2",
+    "fingerprint": "ec0fa9e782975cd2d2e821d8a7b5951542dc4fea43af0a78447a3c841191a4c7",
+    "norm_tag": "libero",
+    "action_horizon": 10,
+    "action_dim": 7
+  },
   "b2405523e67019934dd81be1": {
     "checkpoint": "allenai/MolmoAct2-LIBERO",
     "revision": "0d24a92bd1faf321ef497c3bbd5681af97c65aa2",

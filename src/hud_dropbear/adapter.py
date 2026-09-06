@@ -1,5 +1,6 @@
 """Map HUD's explicit raw LIBERO contract to the published Dropbear SDK."""
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +15,7 @@ from .contract import CAMERAS, CHUNK_SIZE, build_contract, finite_array
 class LiberoInput:
     observation: Any
     instruction: str
+    input_sha256: str
 
 
 class LiberoAdapter(Adapter):
@@ -44,8 +46,15 @@ class LiberoAdapter(Adapter):
             images.append(image)
         state = finite_array(data["state"], (8,), "LIBERO state")
         # Do not rotate or normalize: the SDK's observation.to_wire owns preprocessing.
+        digest = hashlib.sha256(prompt.encode("utf-8") + b"\0")
+        for value in (*images, state):
+            digest.update(str(value.dtype).encode() + b"\0")
+            digest.update(str(value.shape).encode() + b"\0")
+            digest.update(value.tobytes(order="C"))
         return LiberoInput(
-            observe(agent_frame=images[0], wrist_frame=images[1], state=state.tolist()), prompt
+            observe(agent_frame=images[0], wrist_frame=images[1], state=state.tolist()),
+            prompt,
+            digest.hexdigest(),
         )
 
     def adapt_chunk(self, chunk, obs):

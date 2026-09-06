@@ -123,6 +123,7 @@ class DropbearModel(Model):
             session_id=self.policy.session_id,
             observation_id=result.observation_id,
             chunk_id=result.chunk_id,
+            input_sha256=batch.input_sha256,
             transport=self.policy.transport_mode,
             fallback_reason=getattr(self.policy, "fallback_reason", None),
             duration_s=time.monotonic() - started,

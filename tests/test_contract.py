@@ -38,6 +38,17 @@ def test_wire_and_preprocessing_once():
     assert images[1][180, 180, 1] > 240 and images[1][40, 40, 1] < 10
 
 
+def test_input_digest_detects_camera_state_and_instruction_changes():
+    adapter = LiberoAdapter()
+    original = adapter.adapt_observation(observation(), "task").input_sha256
+    assert original == adapter.adapt_observation(observation(), "task").input_sha256
+    for key in (*CAMERAS, "state"):
+        obs = observation()
+        obs["data"][key].flat[0] += 1
+        assert adapter.adapt_observation(obs, "task").input_sha256 != original
+    assert adapter.adapt_observation(observation(), "changed task").input_sha256 != original
+
+
 @pytest.mark.parametrize(
     "field,value", [("orientation", "upright"), ("camera_role", "wrist"), ("dtype", "float32")]
 )

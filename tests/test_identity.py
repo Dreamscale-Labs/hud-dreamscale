@@ -6,6 +6,18 @@ from test_lifecycle import FakePolicy
 from hud_dropbear.agent import ready_target_artifact, serving_identity
 
 
+def test_full_pipeline_candidate_requires_exact_qualified_fingerprint():
+    policy = FakePolicy()
+    config = policy.resolved_optimization_config
+    config.tensorrt_artifact_id = "714f89f13e8d3ede87af7049"
+    with pytest.raises(ValueError, match="Unverified TensorRT artifact"):
+        serving_identity(policy)
+    config.tensorrt_artifact_fingerprint = (
+        "ec0fa9e782975cd2d2e821d8a7b5951542dc4fea43af0a78447a3c841191a4c7"
+    )
+    assert serving_identity(policy)["tensorrt_artifact_id"] == config.tensorrt_artifact_id
+
+
 @pytest.mark.parametrize(
     "worker_count,active_sessions,allowed", [(1, 1, True), (2, 1, False), (1, 2, False)]
 )
