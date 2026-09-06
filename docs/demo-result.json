@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-06",
+  "scope": "Six fixed HUD-hosted integration episodes in a development deployment; not benchmark-wide accuracy.",
+  "source_results_sha256": "1db62b5b852225cad9876e16c4f6125ee00429c87a6b759883544c09e1ee769b",
+  "integration_revision": "26873b5602db869a447613527e029539c21c3a51",
+  "protocol": {
+    "suite": "libero_spatial",
+    "task_order": 0,
+    "task_ids": [
+      0,
+      1,
+      2
+    ],
+    "initial_state_ids": [
+      0,
+      1
+    ],
+    "seed": 0,
+    "control_hz": 20,
+    "settling_steps": 10,
+    "chunk_size": 10,
+    "action_limit": 600,
+    "sequential": true
+  },
+  "model": {
+    "model": "molmoact2-libero",
+    "backend": "tensorrt",
+    "checkpoint": "allenai/MolmoAct2-LIBERO",
+    "checkpoint_revision": "0d24a92bd1faf321ef497c3bbd5681af97c65aa2",
+    "tensorrt_artifact_id": "714f89f13e8d3ede87af7049",
+    "tensorrt_artifact_fingerprint": "ec0fa9e782975cd2d2e821d8a7b5951542dc4fea43af0a78447a3c841191a4c7"
+  },
+  "episodes": [
+    {
+      "task_id": 0,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate",
+      "init_state_id": 0,
+      "success": true,
+      "reward": 1.0,
+      "integration_error": false,
+      "actions": 77
+    },
+    {
+      "task_id": 0,
+      "task_name": "pick_up_the_black_bowl_between_the_plate_and_the_ramekin_and_place_it_on_the_plate",
+      "init_state_id": 1,
+      "success": true,
+      "reward": 1.0,
+      "integration_error": false,
+      "actions": 106
+    },
+    {
+      "task_id": 1,
+      "task_name": "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate",
+      "init_state_id": 0,
+      "success": true,
+      "reward": 1.0,
+      "integration_error": false,
+      "actions": 117
+    },
+    {
+      "task_id": 1,
+      "task_name": "pick_up_the_black_bowl_next_to_the_ramekin_and_place_it_on_the_plate",
+      "init_state_id": 1,
+      "success": true,
+      "reward": 1.0,
+      "integration_error": false,
+      "actions": 102
+    },
+    {
+      "task_id": 2,
+      "task_name": "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate",
+      "init_state_id": 0,
+      "success": true,
+      "reward": 1.0,
+      "integration_error": false,
+      "actions": 98
+    },
+    {
+      "task_id": 2,
+      "task_name": "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate",
+      "init_state_id": 1,
+      "success": true,
+      "reward": 1.0,
+      "integration_error": false,
+      "actions": 94
+    }
+  ],
+  "successes": 6,
+  "integration_errors": 0,
+  "demo_passed": true,
+  "final_qualification_attempts": [
+    {
+      "attempt": 1,
+      "episodes": 6,
+      "integration_errors": 6,
+      "actions": 0,
+      "outcome": "Identity check rejected disconnected worker registration; no model-quality result."
+    },
+    {
+      "attempt": 2,
+      "episodes": 6,
+      "integration_errors": 0,
+      "successes": 6,
+      "outcome": "Hosted acceptance passed after ready-worker identity check correction."
+    }
+  ]
+}

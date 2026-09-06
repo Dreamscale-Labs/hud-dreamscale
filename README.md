@@ -5,6 +5,10 @@ Dropbear-hosted [MolmoAct2-LIBERO](https://huggingface.co/allenai/MolmoAct2-LIBE
 inference. HUD owns simulation, action execution, grading and video traces;
 Dropbear owns the model server. The agent needs no local GPU or model weights.
 
+The [six-episode demo](docs/demo.md) records the validated taskset, all final
+qualification attempts and version pins. The final hosted run succeeded on all
+six episodes; this is an integration result, not a benchmark-wide accuracy claim.
+
 ## Install
 
 Use Python 3.12 and [uv](https://docs.astral.sh/uv/):
@@ -232,4 +236,4 @@ They do not count as real-model evaluation. Live acceptance evidence is tracked
 separately; no score or startup result is claimed before a completed run.
 
 Integration code is MIT licensed. Dependencies, model checkpoints and simulator
-assets retain their respective upstream licenses.
+assets retain their respective upstream licenses. See [upstream materials](THIRD_PARTY.md).
