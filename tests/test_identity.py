@@ -19,10 +19,17 @@ def test_full_pipeline_candidate_requires_exact_qualified_fingerprint():
 
 
 @pytest.mark.parametrize(
-    "worker_count,active_sessions,allowed", [(1, 1, True), (2, 1, False), (1, 2, False)]
+    "worker_count,ready_worker_count,active_sessions,allowed",
+    [
+        (1, 1, 1, True),
+        (2, 1, 1, True),  # A disconnected/degraded registration is not a ready worker.
+        (2, 2, 1, False),
+        (2, 0, 1, False),
+        (1, 1, 2, False),
+    ],
 )
 async def test_cold_session_identity_requires_unambiguous_worker(
-    worker_count, active_sessions, allowed
+    worker_count, ready_worker_count, active_sessions, allowed
 ):
     policy = FakePolicy()
     config = policy.resolved_optimization_config
@@ -49,7 +56,7 @@ async def test_cold_session_identity_requires_unambiguous_worker(
                             "target_key": "test-target",
                             "ready": True,
                             "worker_count": worker_count,
-                            "ready_worker_count": worker_count,
+                            "ready_worker_count": ready_worker_count,
                             "active_sessions": active_sessions,
                             "worker_capabilities": {
                                 "backends": ["tensorrt"],

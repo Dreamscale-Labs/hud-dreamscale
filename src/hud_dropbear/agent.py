@@ -42,8 +42,12 @@ async def ready_target_artifact(policy, *, client_factory=ControlPlaneClient):
     if len(matches) != 1:
         raise ValueError("Cannot identify one Dropbear target for this session")
     target = matches[0]
+    # worker_count includes disconnected or degraded registrations. The status
+    # API selects worker_capabilities from the ready pool whenever it is nonempty.
+    # Exactly one ready worker makes those capabilities unambiguous even when
+    # another registration remains in the pool.
     if not target.get("ready") or any(
-        target.get(key) != 1 for key in ("worker_count", "ready_worker_count", "active_sessions")
+        target.get(key) != 1 for key in ("ready_worker_count", "active_sessions")
     ):
         raise ValueError("Artifact fallback requires exactly one ready worker and active session")
     caps = target.get("worker_capabilities") or {}
