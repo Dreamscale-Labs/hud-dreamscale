@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -58,6 +59,7 @@ async def test_pool_exclusive_stable_lane_and_nested_borrow():
 
 async def test_partial_startup_failure_closes_successes_and_cancels_other_starts():
     opened, closed, cancelled = [], [], []
+    events = []
     ready = asyncio.Event()
 
     @asynccontextmanager
@@ -79,10 +81,22 @@ async def test_partial_startup_failure_closes_successes_and_cancels_other_starts
             closed.append(slot)
 
     with pytest.raises(RuntimeError, match="startup failed"):
-        async with RuntimePool(provider, cohort_tasks(3), concurrency=3):
+        async with RuntimePool(
+            provider,
+            cohort_tasks(3),
+            concurrency=3,
+            emit=lambda event, **fields: events.append({"event": event, **fields}),
+        ):
             pytest.fail("Startup should fail")
     assert opened == closed == [0]
     assert cancelled == [2]
+    failure = next(e for e in events if e["event"] == "simulator_startup_failed")
+    cancellation = next(e for e in events if e["event"] == "simulator_startup_cancelled")
+    assert (failure["lane_id"], failure["phase"], failure["error_type"]) == (
+        1, "runtime_lease", "RuntimeError"
+    )
+    assert (cancellation["lane_id"], cancellation["phase"]) == (2, "runtime_lease")
+    assert "startup failed" not in json.dumps(events)
 
 
 async def test_cancellation_waits_for_all_runtime_cleanup():
@@ -242,3 +256,157 @@ async def test_episode_logging_failure_always_clears_lane_and_task_context(faile
     finally:
         CURRENT_TASK.reset(token)
     assert closed == [0]
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True, "900", None])
+def test_startup_timeout_requires_positive_finite_number(timeout):
+    with pytest.raises(ValueError, match="positive finite"):
+        RuntimePool(None, cohort_tasks(1), concurrency=1, startup_timeout=timeout)
+
+
+async def test_actual_hud_connect_uses_pool_timeout_without_mutating_provider_descriptor():
+    from hud.clients import connect as hud_connect
+    from hud.environment.utils import read_frame, send_frame
+
+    attempts, closed, handlers = 0, [], set()
+
+    async def control(reader, writer):
+        nonlocal attempts
+        handlers.add(asyncio.current_task())
+        try:
+            request = await read_frame(reader)
+            assert request["method"] == "hello"
+            attempts += 1
+            if attempts <= 2:
+                await asyncio.sleep(0.04)
+                return  # Accepted before the remote control server is ready.
+            await send_frame(writer, {
+                "jsonrpc": "2.0", "id": request["id"],
+                "result": {
+                    "session_id": "control-session", "bindings": [],
+                    "env": {"name": "dropbear-libero-pooled", "version": "1"},
+                },
+            })
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            handlers.remove(asyncio.current_task())
+
+    server = await asyncio.start_server(control, "127.0.0.1", 0)
+    original = Runtime(
+        f"tcp://127.0.0.1:{server.sockets[0].getsockname()[1]}",
+        params={"ready_timeout": 0.02, "session_id": "lease", "opaque": "preserved"},
+    )
+    original_params = original.params.copy()
+
+    @asynccontextmanager
+    async def provider(task):
+        try:
+            yield original
+        finally:
+            closed.append(original)
+
+    try:
+        # Reproduce the actual SDK precedence: an explicit keyword alone loses.
+        with pytest.raises(EOFError):
+            async with hud_connect(original, ready_timeout=2):
+                pytest.fail("The provider's shorter default still overrides the keyword")
+        assert attempts == 1
+        attempts = 0
+        async with RuntimePool(
+            provider, cohort_tasks(1), concurrency=1, startup_timeout=2,
+            connector=hud_connect,
+        ) as pool:
+            effective = pool.lanes[0].runtime
+            assert attempts == 3  # Real HUD retry loop survives both early EOFs.
+            assert effective is not original
+            assert effective.params == {**original_params, "ready_timeout": 2}
+            assert effective.url == original.url and effective.config is original.config
+            assert original.params == original_params
+        assert closed == [original]
+    finally:
+        server.close()
+        await server.wait_closed()
+        if handlers:
+            await asyncio.wait_for(asyncio.gather(*handlers), 2)
+
+
+async def test_hanging_actual_hello_keeps_outer_startup_bound_and_cancelled_diagnostic():
+    from hud.clients import connect as hud_connect
+    from hud.environment.utils import read_frame
+
+    handlers, closed, events = set(), [], []
+
+    async def control(reader, writer):
+        handlers.add(asyncio.current_task())
+        try:
+            await read_frame(reader)
+            await reader.read()  # An accepted connection that never answers hello.
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            handlers.remove(asyncio.current_task())
+
+    server = await asyncio.start_server(control, "127.0.0.1", 0)
+    original = Runtime(
+        f"tcp://127.0.0.1:{server.sockets[0].getsockname()[1]}",
+        params={"ready_timeout": 900},
+    )
+
+    @asynccontextmanager
+    async def provider(task):
+        try:
+            yield original
+        finally:
+            closed.append(True)
+
+    try:
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(2), RuntimePool(
+                provider, cohort_tasks(1), concurrency=1, startup_timeout=0.05,
+                connector=hud_connect,
+                emit=lambda event, **fields: events.append({"event": event, **fields}),
+            ):
+                pytest.fail("A hanging hello must remain bounded")
+        row = next(e for e in events if e["event"] == "simulator_startup_cancelled")
+        assert row["phase"] == "control_hello" and row["error_type"] == "CancelledError"
+        assert row["duration_s"] < 1
+        assert closed == [True] and original.params == {"ready_timeout": 900}
+    finally:
+        server.close()
+        await server.wait_closed()
+        if handlers:
+            await asyncio.wait_for(asyncio.gather(*handlers), 2)
+
+
+async def test_startup_error_telemetry_is_bounded_and_cannot_suppress_cleanup():
+    events, closed = [], []
+
+    @asynccontextmanager
+    async def provider(task):
+        try:
+            yield Runtime("tcp://private.invalid", params={"auth": "SECRET"})
+        finally:
+            closed.append(True)
+
+    @asynccontextmanager
+    async def failing_connection(runtime, **kwargs):
+        raise EOFError("private.invalid SECRET")
+        yield
+
+    def emit(event, **fields):
+        events.append({"event": event, **fields})
+        if event == "simulator_startup_failed":
+            raise OSError("telemetry unavailable")
+
+    with pytest.raises(EOFError, match="SECRET"):
+        async with RuntimePool(
+            provider, cohort_tasks(1), concurrency=1, connector=failing_connection, emit=emit,
+        ):
+            pass
+    row = next(e for e in events if e["event"] == "simulator_startup_failed")
+    assert row["phase"] == "control_hello" and row["error_type"] == "EOFError"
+    assert row["duration_s"] >= 0 and row["startup_timeout_s"] == 900
+    assert "SECRET" not in json.dumps(events) and "private.invalid" not in json.dumps(events)
+    assert closed == [True]

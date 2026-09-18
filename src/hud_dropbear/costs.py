@@ -162,7 +162,7 @@ def _state(rows):
             state["resources"][row["resource"]]["terminated_at"] = row["terminated_at"]
         elif event == "reconcile":
             state["stages"][row["stage"]]["released"] = True
-        elif event == "refine_hold":
+        elif event in {"refine_hold", "reprice_completed_hold"}:
             stage = state["stages"][row["stage"]]
             stage["holds_usd"][row["provider"]] = row["hold_usd"]
             stage["lag_usd"][row["provider"]] = row["lag_usd"]
@@ -206,8 +206,9 @@ class CampaignBudget:
     """Hash-linked append-only evidence; reopening preserves every prior liability.
 
     Until billing is settled, posted cost plus the full pending reservation is a
-    conservative bound and may overlap. Stopping resources alone never releases
-    that hold. Unknown HUD credit balance prevents reserving any paid stage.
+    conservative liability estimate and may overlap; it is not a provider charge
+    ceiling. Stopping resources alone never releases that hold. Unknown HUD credit
+    balance prevents reserving any paid stage.
     """
 
     def __init__(self, path):
@@ -444,7 +445,8 @@ class CampaignBudget:
             resources = [state["resources"][key] for key in row["resources"]]
             actual = {
                 resource["resource"].split(":", 1)[1]
-                for resource in resources if resource["provider"] == provider
+                for resource in resources
+                if resource["provider"] == provider
             }
             if actual != set(resource_ids) or any(
                 resource["terminated_at"] is None for resource in resources
@@ -457,6 +459,128 @@ class CampaignBudget:
                     "Refinement must preserve the full estimate and reduce only planning slack"
                 )
             event.update(previous_hold_usd=str(previous), lag_usd=str(hold - floor))
+
+        self._append(event, validate)
+
+    def reprice_completed_compute_hold(
+        self, stage, provider, *, hold_usd, evidence_path, evidence_sha256
+    ):
+        """Replace unused planned lifetime with a reviewed terminal-lifecycle estimate.
+
+        This is distinct from billing settlement and ordinary lag refinement. It
+        retains original reservation history, all posted cost and a positive
+        unpaid allowance. Late bills increase liability; they do not consume or
+        release this hold automatically. No stage may be reused or repriced twice.
+
+        Currently only Modal App IDs are eligible: storage and other resource
+        kinds require a separate lifetime model. Hashed operator evidence is
+        reviewable provenance, not provider authentication or a charge ceiling.
+        """
+        if provider != "modal":
+            raise ValueError("Completed compute repricing currently requires Modal Apps")
+        hold = amount(hold_usd)
+        path = Path(evidence_path).resolve()
+        raw = path.read_bytes()
+        if len(raw) > 1_048_576 or hashlib.sha256(raw).hexdigest() != evidence_sha256:
+            raise ValueError("Lifecycle evidence digest or size differs")
+        proof = json.loads(raw)
+        if not isinstance(proof, dict):
+            raise ValueError("Lifecycle evidence must be an object")
+        resources, references = proof.get("resources"), proof.get("evidence")
+        if (
+            type(proof.get("schema_version")) is not int
+            or proof["schema_version"] != 1
+            or proof.get("purpose") != "completed_compute_lifetime_repricing"
+            or proof.get("stage") != stage
+            or proof.get("provider") != provider
+            or proof.get("resource_inventory_complete") is not True
+            or proof.get("unknown_resource_creation") is not False
+            or proof.get("additional_billable_resources") != []
+            or proof.get("lifecycle_evidence_complete") is not True
+            or not isinstance(proof.get("basis"), str)
+            or not proof["basis"].strip()
+            or not isinstance(resources, list)
+            or not resources
+            or not isinstance(references, list)
+            or not references
+        ):
+            raise ValueError("Complete reviewed compute lifecycle evidence is required")
+        by_id = {}
+        for resource in resources:
+            if (
+                not isinstance(resource, dict)
+                or set(resource)
+                != {"resource_id", "terminated_at", "baseline_usd", "recorded_total_usd"}
+                or not isinstance(resource["resource_id"], str)
+                or not resource["resource_id"].startswith("ap-")
+                or len(resource["resource_id"]) <= 3
+                or resource["resource_id"] in by_id
+            ):
+                raise ValueError("Exact unique compute App identities are required")
+            for name in ("terminated_at", "baseline_usd", "recorded_total_usd"):
+                amount(resource[name])
+            by_id[resource["resource_id"]] = resource
+        lifecycle = amount(proof.get("conservative_lifecycle_estimate_usd"))
+        lag = amount(proof.get("unbilled_lag_usd"))
+        original = amount(proof.get("original_planned_estimate_usd"))
+        if lifecycle <= 0 or lag <= 0 or hold != lifecycle + lag:
+            raise ValueError(
+                "Hold must equal a positive lifecycle estimate plus explicit unpaid lag"
+            )
+        for reference in references:
+            if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+                raise ValueError("Lifecycle source reference is malformed")
+            source = Path(reference["path"])
+            if (
+                not source.is_absolute()
+                or hashlib.sha256(source.read_bytes()).hexdigest() != reference["sha256"]
+            ):
+                raise ValueError("Lifecycle source evidence differs")
+        event = {
+            "event": "reprice_completed_hold",
+            "stage": stage,
+            "provider": provider,
+            "hold_usd": str(hold),
+            "lag_usd": str(lag),
+            "conservative_lifecycle_estimate_usd": str(lifecycle),
+            "resource_ids": sorted(by_id),
+            "evidence_ref": str(path),
+            "evidence_sha256": evidence_sha256,
+            "proof": proof,
+        }
+
+        def validate(state):
+            row = state["stages"].get(stage)
+            if row is None or row["released"] or provider in row["refined_providers"]:
+                raise ValueError("Stage is missing, settled or already refined/repriced")
+            bound = [state["resources"][key] for key in row["resources"]]
+            if any(r["terminated_at"] is None for r in bound):
+                raise ValueError("All bound resources must be confirmed terminated")
+            actual = {r["resource"].split(":", 1)[1]: r for r in bound if r["provider"] == provider}
+            if set(actual) != set(by_id):
+                raise ValueError("Lifecycle proof must match every exact bound App")
+            if any(
+                set(other["resources"]) & set(row["resources"])
+                for key, other in state["stages"].items()
+                if key != stage
+            ):
+                raise ValueError("Repriced resources cannot be shared with another stage")
+            for identity, resource in actual.items():
+                observed = by_id[identity]
+                for proof_key, state_key in (
+                    ("terminated_at", "terminated_at"),
+                    ("baseline_usd", "baseline_usd"),
+                    ("recorded_total_usd", "total_usd"),
+                ):
+                    if amount(observed[proof_key]) != amount(resource[state_key]):
+                        raise ValueError(
+                            "Lifecycle proof is stale or differs from resource accounting"
+                        )
+            floor = sum(map(amount, row["estimate"]["estimated_usd"][provider].values()))
+            previous = amount(row["holds_usd"][provider])
+            if original != floor or not hold < previous:
+                raise ValueError("Original estimate must match and completed hold must decrease")
+            event["previous_hold_usd"] = str(previous)
 
         self._append(event, validate)
 

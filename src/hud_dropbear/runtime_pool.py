@@ -1,10 +1,11 @@
 """Job-owned scalar simulators, with stable inference-slot identity across resets."""
 
 import asyncio
+import math
 import time
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from hud.clients import connect
 from hud.telemetry.context import get_current_trace_id
@@ -43,6 +44,12 @@ class RuntimePool:
     ):
         if type(concurrency) is not int or not 1 <= concurrency <= 64:
             raise ValueError("concurrency must be between 1 and 64")
+        if (
+            type(startup_timeout) not in (int, float)
+            or not math.isfinite(startup_timeout)
+            or startup_timeout <= 0
+        ):
+            raise ValueError("startup_timeout must be a positive finite number")
         self.provider = provider
         self.concurrency = concurrency
         self.emit = emit or (lambda event, **fields: None)
@@ -84,34 +91,62 @@ class RuntimePool:
 
         async def open_lane(slot):
             started = time.monotonic()
-            self.emit("simulator_starting", lane_id=slot)
-            runtime = await self._owners[slot].enter_async_context(
-                self.provider(self._representatives[slot])
-            )
-            self.emit(
-                "runtime_lease_acquired",
-                lane_id=slot,
-                duration_s=time.monotonic() - started,
-                runtime_session_id=runtime.params.get("session_id"),
-            )
-            # HUDRuntime can yield a local tunnel before the environment has
-            # started. A public hello completes initialization without starting
-            # any task or claiming a robot slot. Closing this idle client leaves
-            # the job-owned runtime available for the real episode connection.
-            connect_started = time.monotonic()
-            async with self._connector(runtime, ready_timeout=self.startup_timeout) as client:
-                if client.manifest.server_info.name != self._representatives[slot].env:
-                    raise ValueError("Runtime initialized the wrong HUD environment")
-            fields = dict(
-                lane_id=slot,
-                duration_s=time.monotonic() - started,
-                control_connect_s=time.monotonic() - connect_started,
-                runtime_session_id=runtime.params.get("session_id"),
-                boundary="control_ready",
-            )
-            self.emit("simulator_control_ready", **fields)
-            self.emit("simulator_acquired", **fields)  # Compatibility with saved timing readers.
-            return Lane(slot, runtime)
+            phase = "runtime_lease"
+            try:
+                self.emit("simulator_starting", lane_id=slot)
+                runtime = await self._owners[slot].enter_async_context(
+                    self.provider(self._representatives[slot])
+                )
+                # HUD connect prioritizes Runtime.params over its timeout keyword.
+                # Copy the public descriptor so the pool's bound takes effect without
+                # changing the provider's descriptor or its ownership/cleanup context.
+                runtime = replace(
+                    runtime, params={**runtime.params, "ready_timeout": self.startup_timeout}
+                )
+                self.emit(
+                    "runtime_lease_acquired",
+                    lane_id=slot,
+                    duration_s=time.monotonic() - started,
+                    runtime_session_id=runtime.params.get("session_id"),
+                    ready_timeout_s=self.startup_timeout,
+                )
+                # A lease can precede remote readiness. Hello initializes control
+                # without starting a task or claiming a robot slot.
+                phase = "control_hello"
+                connect_started = time.monotonic()
+                async with self._connector(runtime, ready_timeout=self.startup_timeout) as client:
+                    phase = "control_identity"
+                    if client.manifest.server_info.name != self._representatives[slot].env:
+                        raise ValueError("Runtime initialized the wrong HUD environment")
+                fields = dict(
+                    lane_id=slot,
+                    duration_s=time.monotonic() - started,
+                    control_connect_s=time.monotonic() - connect_started,
+                    runtime_session_id=runtime.params.get("session_id"),
+                    boundary="control_ready",
+                )
+                self.emit("simulator_control_ready", **fields)
+                self.emit("simulator_acquired", **fields)  # Saved timing reader compatibility.
+                return Lane(slot, runtime)
+            except BaseException as exc:
+                event = (
+                    "simulator_startup_cancelled"
+                    if isinstance(exc, asyncio.CancelledError)
+                    else "simulator_startup_failed"
+                )
+                try:
+                    self.emit(
+                        event,
+                        lane_id=slot,
+                        phase=phase,
+                        duration_s=time.monotonic() - started,
+                        startup_timeout_s=self.startup_timeout,
+                        error_type=type(exc).__name__[:64],
+                    )
+                except Exception:
+                    # Preserve the original failure and unconditional paid teardown.
+                    pass
+                raise
 
         pending = [asyncio.create_task(open_lane(i)) for i in range(self.concurrency)]
         try:

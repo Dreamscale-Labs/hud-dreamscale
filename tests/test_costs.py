@@ -325,3 +325,271 @@ def test_modal_cap_is_explicit_and_generic(tmp_path):
         CampaignBudget.create(tmp_path / "zero-cap.jsonl", modal_cap_usd="0")
     budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="201", hud_cap_usd="1")
     assert budget.report()["modal"]["cap_usd"] == "201"
+
+
+def completed_lifetime_fixture(tmp_path, *, terminate=True, shared=False):
+    """Synthetic provider evidence; never an assertion about actual billing caps."""
+    import hashlib
+    import json
+
+    budget = CampaignBudget.create(
+        tmp_path / "lifetime.jsonl", modal_cap_usd="200", hud_cap_usd="100"
+    )
+    planned = estimate(
+        concurrency=64,
+        startup_seconds="900",
+        idle_seconds="420",
+        run_seconds="4000",
+        cleanup_seconds="450",
+        modal_replica_usd_per_second="0.00235179",
+        modal_overhead_usd_per_second="0.00018417",
+        hud_hourly_rate="0",
+    )
+    budget.reserve_stage(
+        "wide",
+        estimate=planned,
+        modal_lag_usd="3.37871270",
+        hud_lag_usd="2",
+        evidence_ref="original planned lifetime",
+    )
+    if shared:
+        reserve(budget, "another")
+    bills = {"ap-gpu": "9.51503124", "ap-gateway": "1.14253052"}
+    for provider, identity in (
+        ("modal", "ap-gpu"),
+        ("modal", "ap-gateway"),
+        ("hud", "instance-owned"),
+    ):
+        budget.register_owned_resource(provider, identity, baseline_usd="1", evidence_ref="owned")
+        budget.bind_resource("wide", provider, identity)
+        if shared and identity == "ap-gpu":
+            budget.bind_resource("another", provider, identity)
+        if terminate:
+            budget.confirm_termination(
+                provider, identity, terminated_at="1000", evidence_ref="stop"
+            )
+        budget.record_billing(
+            provider, identity, total_usd=bills.get(identity, "1.20"), evidence_ref="posted"
+        )
+    source = tmp_path / "reviewed-lifecycle-and-billing.json"
+    source.write_text(
+        '{"fixture":"complete owned inventory, terminal lifetimes and posted billing"}'
+    )
+    proof = {
+        "schema_version": 1,
+        "purpose": "completed_compute_lifetime_repricing",
+        "stage": "wide",
+        "provider": "modal",
+        "resource_inventory_complete": True,
+        "unknown_resource_creation": False,
+        "additional_billable_resources": [],
+        "lifecycle_evidence_complete": True,
+        "basis": "Reviewed terminal lifetime estimate and unpaid uncertainty; not settled",
+        "resources": [
+            {
+                "resource_id": key,
+                "terminated_at": "1000",
+                "baseline_usd": "1",
+                "recorded_total_usd": value,
+            }
+            for key, value in bills.items()
+        ],
+        "conservative_lifecycle_estimate_usd": "17.5246",
+        "unbilled_lag_usd": "2.4754",
+        "original_planned_estimate_usd": "109.62128730",
+        "evidence": [
+            {"path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+        ],
+    }
+    path = tmp_path / "completed-proof.json"
+    path.write_text(json.dumps(proof))
+    return budget, path, proof
+
+
+def reprice_completed(budget, path, *, hold="20", digest=None):
+    import hashlib
+
+    budget.reprice_completed_compute_hold(
+        "wide",
+        "modal",
+        hold_usd=hold,
+        evidence_path=path,
+        evidence_sha256=digest or hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+
+def test_completed_repricing_keeps_original_plan_posted_cost_and_unsettled_history(tmp_path):
+    import json
+
+    from hud_dropbear.costs import _read, _state
+
+    budget, path, _ = completed_lifetime_fixture(tmp_path)
+    before = budget.path.read_bytes()
+    reprice_completed(budget, path)
+    assert budget.path.read_bytes().startswith(before)
+    rows = [json.loads(line) for line in budget.path.read_text().splitlines()]
+    assert len(rows) == len(before.splitlines()) + 1
+    assert rows[1]["holds_usd"]["modal"] == "113.00000000"
+    assert rows[-1]["event"] == "reprice_completed_hold"
+    assert rows[-1]["previous_hold_usd"] == "113.00000000"
+    assert rows[-1]["lag_usd"] == "2.4754"
+    report = CampaignBudget(budget.path).report()
+    assert report["modal"]["provider_posted_usd"] == "8.65756176"
+    assert report["modal"]["unreconciled_holds_usd"] == "20"
+    assert report["modal"]["conservative_liability_usd"] == "28.65756176"
+    assert Decimal(report["hud"]["unreconciled_holds_usd"]) == Decimal("2")
+    with budget.path.open() as file:
+        state = _state(_read(file))
+    assert not state["stages"]["wide"]["released"]
+    assert all(row["settled_through"] is None for row in state["resources"].values())
+    with pytest.raises(ValueError, match="complete posted billing"):
+        budget.reconcile_stage("wide", evidence_ref="not settlement")
+    budget.record_billing("modal", "ap-gpu", total_usd="10.51503124", evidence_ref="later bill")
+    assert budget.report()["modal"]["conservative_liability_usd"] == "29.65756176"
+    assert budget.report()["modal"]["unreconciled_holds_usd"] == "20"
+    # Even a surprising late bill is retained; it blocks further allocations.
+    budget.record_billing("modal", "ap-gpu", total_usd="201", evidence_ref="late overrun")
+    before = budget.path.read_bytes()
+    with pytest.raises(BudgetExceededError, match="modal"):
+        reserve(budget, "next")
+    assert budget.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", True),
+        ("purpose", "billing_settlement"),
+        ("stage", "different"),
+        ("provider", "hud"),
+        ("resource_inventory_complete", False),
+        ("unknown_resource_creation", True),
+        ("additional_billable_resources", ["unknown"]),
+        ("lifecycle_evidence_complete", False),
+        ("basis", ""),
+        ("resources", []),
+        ("evidence", []),
+        ("original_planned_estimate_usd", "109"),
+        ("conservative_lifecycle_estimate_usd", "0"),
+        ("unbilled_lag_usd", "0"),
+        ("unbilled_lag_usd", "NaN"),
+        ("unbilled_lag_usd", "2.4755"),
+    ],
+)
+def test_completed_repricing_incomplete_or_inconsistent_proof_is_nonmutating(
+    tmp_path, field, value
+):
+    import json
+
+    budget, path, proof = completed_lifetime_fixture(tmp_path)
+    proof[field] = value
+    path.write_text(json.dumps(proof))
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError):
+        reprice_completed(budget, path)
+    assert budget.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("resource_id", "ap-other"),
+        ("resource_id", "vo-owned"),
+        ("terminated_at", "999"),
+        ("baseline_usd", "0"),
+        ("recorded_total_usd", "9.5"),
+    ],
+)
+def test_completed_repricing_exact_current_accounting_identity_required(tmp_path, field, value):
+    import json
+
+    budget, path, proof = completed_lifetime_fixture(tmp_path)
+    proof["resources"][0][field] = value
+    path.write_text(json.dumps(proof))
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError):
+        reprice_completed(budget, path)
+    assert budget.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "unterminated",
+        "shared",
+        "duplicate",
+        "extra",
+        "active_volume",
+        "terminated_volume",
+        "hud_unterminated",
+        "later_bill",
+    ],
+)
+def test_completed_repricing_ineligible_inventory_is_nonmutating(tmp_path, condition):
+    import json
+
+    budget, path, proof = completed_lifetime_fixture(
+        tmp_path,
+        terminate=condition not in {"unterminated", "hud_unterminated"},
+        shared=condition == "shared",
+    )
+    if condition == "hud_unterminated":
+        for identity in ("ap-gpu", "ap-gateway"):
+            budget.confirm_termination("modal", identity, terminated_at="1000", evidence_ref="stop")
+    if condition == "duplicate":
+        proof["resources"].append(proof["resources"][0])
+    if condition in {"extra", "active_volume", "terminated_volume"}:
+        identity = "ap-extra" if condition == "extra" else "vo-owned"
+        budget.register_owned_resource("modal", identity, baseline_usd="0", evidence_ref="owned")
+        budget.bind_resource("wide", "modal", identity)
+        if condition != "active_volume":
+            budget.confirm_termination("modal", identity, terminated_at="1000", evidence_ref="stop")
+    if condition == "later_bill":
+        budget.record_billing("modal", "ap-gpu", total_usd="10", evidence_ref="new bill")
+    path.write_text(json.dumps(proof))
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError):
+        reprice_completed(budget, path)
+    assert budget.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("target", ["proof", "reference"])
+def test_completed_repricing_evidence_hashes_are_verified(tmp_path, target):
+    import hashlib
+    from pathlib import Path
+
+    budget, path, proof = completed_lifetime_fixture(tmp_path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    changed = path if target == "proof" else Path(proof["evidence"][0]["path"])
+    changed.write_text(changed.read_text() + " ")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="differs"):
+        reprice_completed(budget, path, digest=digest)
+    assert budget.path.read_bytes() == before
+
+
+def test_completed_repricing_cannot_repeat_refine_or_reopen_stage(tmp_path):
+    import hashlib
+    import json
+
+    budget, path, proof = completed_lifetime_fixture(tmp_path)
+    reprice_completed(budget, path)
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="already refined/repriced"):
+        reprice_completed(budget, path)
+    ordinary = {**proof, "resource_ids": ["ap-gpu", "ap-gateway"]}
+    path.write_text(json.dumps(ordinary))
+    with pytest.raises(ValueError, match="already refined"):
+        budget.refine_stage_hold(
+            "wide",
+            "modal",
+            hold_usd="15",
+            evidence_path=path,
+            evidence_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+    assert budget.path.read_bytes() == before
+    budget.register_owned_resource("modal", "ap-future", baseline_usd="0", evidence_ref="owned")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="refined"):
+        budget.bind_resource("wide", "modal", "ap-future")
+    assert budget.path.read_bytes() == before
