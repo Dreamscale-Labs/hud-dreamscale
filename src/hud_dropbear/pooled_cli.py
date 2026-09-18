@@ -229,6 +229,7 @@ async def evaluate(args):
         emit=evidence.emit,
         journal_path=args.output / "requests.jsonl",
         ready_timeout=args.startup_timeout,
+        max_not_admitted_resubmissions=args.max_not_admitted_resubmissions,
         expected_release_id=args.expected_release_id,
         expected_release_sha256=args.expected_release_sha256,
     )
@@ -257,6 +258,7 @@ async def evaluate(args):
         concurrency=args.concurrency,
         expected_episodes=len(rows),
         episodes_per_lane=args.episodes_per_lane,
+        max_not_admitted_resubmissions=args.max_not_admitted_resubmissions,
         cohort_sha256=digest,
         hud_revision=HUD_REVISION,
         hud_base_revision=HUD_BASE_REVISION,
@@ -410,6 +412,13 @@ def parser():
     p.add_argument("--api-base", help="Dropbear inference API base (otherwise SDK configuration)")
     p.add_argument("--expected-release-id")
     p.add_argument("--expected-release-sha256")
+    p.add_argument(
+        "--max-not-admitted-resubmissions",
+        type=int,
+        choices=range(3),
+        default=0,
+        help="Retry only after atomic confirmation that a request was not admitted (default: 0)",
+    )
     p.add_argument(
         "--max-steps",
         type=int,

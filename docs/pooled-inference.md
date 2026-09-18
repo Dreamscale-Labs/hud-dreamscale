@@ -115,6 +115,14 @@ SDK connection discovery. The server chooses actual compute placement; record it
 from provider evidence rather than assuming the control-plane region is the GPU
 region. Do not use a private diagnostic route for the evaluation.
 
+`--max-not-admitted-resubmissions 1` opts into one new request only after an
+identity-checked atomic resolution confirms that the original was never admitted.
+The default is zero; the maximum is two. Uncertain or pending work is never
+replayed. Each failed attempt remains in the timing sidecar and durable request
+journal, and logical inference latency includes the entire recovery interval.
+Python callers use the same `PooledProvider(max_not_admitted_resubmissions=1)`
+option.
+
 `--concurrency` accepts any integer 1–64. Eight active slots fit each whole-model
 H100 worker; reserved capacity is rounded up to a multiple of eight. Requesting
 three environments therefore still reserves one worker. These are independent
