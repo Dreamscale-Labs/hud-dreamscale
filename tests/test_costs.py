@@ -327,7 +327,9 @@ def test_modal_cap_is_explicit_and_generic(tmp_path):
     assert budget.report()["modal"]["cap_usd"] == "201"
 
 
-def completed_lifetime_fixture(tmp_path, *, terminate=True, shared=False):
+def completed_lifetime_fixture(
+    tmp_path, *, terminate=True, shared=False, post_modal_billing=True
+):
     """Synthetic provider evidence; never an assertion about actual billing caps."""
     import hashlib
     import json
@@ -355,6 +357,8 @@ def completed_lifetime_fixture(tmp_path, *, terminate=True, shared=False):
     if shared:
         reserve(budget, "another")
     bills = {"ap-gpu": "9.51503124", "ap-gateway": "1.14253052"}
+    if not post_modal_billing:
+        bills = dict.fromkeys(bills, "1")
     for provider, identity in (
         ("modal", "ap-gpu"),
         ("modal", "ap-gateway"),
@@ -368,9 +372,10 @@ def completed_lifetime_fixture(tmp_path, *, terminate=True, shared=False):
             budget.confirm_termination(
                 provider, identity, terminated_at="1000", evidence_ref="stop"
             )
-        budget.record_billing(
-            provider, identity, total_usd=bills.get(identity, "1.20"), evidence_ref="posted"
-        )
+        if provider != "modal" or post_modal_billing:
+            budget.record_billing(
+                provider, identity, total_usd=bills.get(identity, "1.20"), evidence_ref="posted"
+            )
     source = tmp_path / "reviewed-lifecycle-and-billing.json"
     source.write_text(
         '{"fixture":"complete owned inventory, terminal lifetimes and posted billing"}'
@@ -588,8 +593,143 @@ def test_completed_repricing_cannot_repeat_refine_or_reopen_stage(tmp_path):
             evidence_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         )
     assert budget.path.read_bytes() == before
+
+
     budget.register_owned_resource("modal", "ap-future", baseline_usd="0", evidence_ref="owned")
     before = budget.path.read_bytes()
     with pytest.raises(ValueError, match="refined"):
         budget.bind_resource("wide", "modal", "ap-future")
+    assert budget.path.read_bytes() == before
+
+
+def remaining_lifetime_proof(path, proof):
+    import json
+
+    posted = sum(
+        Decimal(row["recorded_total_usd"]) - Decimal(row["baseline_usd"])
+        for row in proof["resources"]
+    )
+    remaining = max(Decimal(proof["conservative_lifecycle_estimate_usd"]) - posted, Decimal(0))
+    proof.update(
+        schema_version=2,
+        liability_basis="remaining_after_exact_posted_cost",
+        posted_cost_deduction_usd=str(posted),
+        remaining_lifecycle_allowance_usd=str(remaining),
+    )
+    path.write_text(json.dumps(proof))
+    return str(remaining + Decimal(proof["unbilled_lag_usd"]))
+
+
+def test_remaining_liability_deducts_only_posted_above_baseline_and_preserves_lag(tmp_path):
+    import json
+
+    budget, path, proof = completed_lifetime_fixture(tmp_path)
+    hold = remaining_lifetime_proof(path, proof)
+    reprice_completed(budget, path, hold=hold)
+    row = json.loads(budget.path.read_text().splitlines()[-1])
+    assert row["posted_cost_deduction_usd"] == "8.65756176"  # Excludes two $1 baselines.
+    assert row["remaining_lifecycle_allowance_usd"] == "8.86703824"
+    assert row["lag_usd"] == "2.4754"
+    reopened = CampaignBudget(budget.path)
+    report = reopened.report()["modal"]
+    assert report["provider_posted_usd"] == "8.65756176"
+    assert report["unreconciled_holds_usd"] == "11.34243824"
+    assert report["conservative_liability_usd"] == "20.00000000"
+    with pytest.raises(ValueError, match="complete posted billing"):
+        reopened.reconcile_stage("wide", evidence_ref="still not settlement")
+    reopened.record_billing("modal", "ap-gpu", total_usd="10.51503124", evidence_ref="later bill")
+    report = reopened.report()["modal"]
+    assert report["unreconciled_holds_usd"] == "11.34243824"
+    assert report["conservative_liability_usd"] == "21.00000000"
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="already refined/repriced"):
+        reprice_completed(reopened, path, hold=hold)
+    assert budget.path.read_bytes() == before
+
+
+def test_remaining_liability_keeps_positive_lag_when_posted_exceeds_estimate(tmp_path):
+    budget, path, proof = completed_lifetime_fixture(tmp_path)
+    proof["conservative_lifecycle_estimate_usd"] = "1"
+    hold = remaining_lifetime_proof(path, proof)
+    assert hold == "2.4754"
+    reprice_completed(budget, path, hold=hold)
+    report = budget.report()["modal"]
+    assert report["provider_posted_usd"] == "8.65756176"
+    assert report["unreconciled_holds_usd"] == "2.4754"
+    assert report["conservative_liability_usd"] == "11.13296176"
+
+
+def test_remaining_liability_missing_bills_do_not_reduce_the_allowance(tmp_path):
+    budget, path, proof = completed_lifetime_fixture(tmp_path, post_modal_billing=False)
+    hold = remaining_lifetime_proof(path, proof)
+    assert proof["posted_cost_deduction_usd"] == "0"
+    assert hold == "20.0000"
+    reprice_completed(budget, path, hold=hold)
+    assert budget.report()["modal"]["unreconciled_holds_usd"] == "20.0000"
+    with pytest.raises(ValueError, match="complete posted billing"):
+        budget.reconcile_stage("wide", evidence_ref="missing billing is not free usage")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", 3),
+        ("liability_basis", "billing_settled"),
+        ("posted_cost_deduction_usd", "NaN"),
+        ("posted_cost_deduction_usd", "-1"),
+        ("posted_cost_deduction_usd", None),
+        ("remaining_lifecycle_allowance_usd", "8"),
+        ("remaining_lifecycle_allowance_usd", "Infinity"),
+        ("unbilled_lag_usd", "0"),
+    ],
+)
+def test_remaining_liability_invalid_arithmetic_or_schema_is_nonmutating(tmp_path, field, value):
+    import json
+
+    budget, path, proof = completed_lifetime_fixture(tmp_path)
+    hold = remaining_lifetime_proof(path, proof)
+    proof[field] = value
+    path.write_text(json.dumps(proof))
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError):
+        reprice_completed(budget, path, hold=hold)
+    assert budget.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("deduction", ["0", "9.65756176"])
+def test_remaining_liability_rechecks_deduction_against_locked_accounting(tmp_path, deduction):
+    import json
+
+    budget, path, proof = completed_lifetime_fixture(tmp_path)
+    remaining_lifetime_proof(path, proof)
+    proof["posted_cost_deduction_usd"] = deduction
+    remaining = Decimal(proof["conservative_lifecycle_estimate_usd"]) - Decimal(deduction)
+    proof["remaining_lifecycle_allowance_usd"] = str(remaining)
+    path.write_text(json.dumps(proof))
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="exact attributable posted cost"):
+        reprice_completed(budget, path, hold=str(remaining + Decimal(proof["unbilled_lag_usd"])))
+    assert budget.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("condition", ["later_bill", "baseline", "shared", "active", "missing"])
+def test_remaining_liability_preserves_inventory_and_current_bill_requirements(tmp_path, condition):
+    import json
+
+    budget, path, proof = completed_lifetime_fixture(
+        tmp_path, terminate=condition != "active", shared=condition == "shared"
+    )
+    hold = remaining_lifetime_proof(path, proof)
+    if condition == "later_bill":
+        budget.record_billing("modal", "ap-gpu", total_usd="10", evidence_ref="new bill")
+    elif condition == "baseline":
+        proof["resources"][0]["baseline_usd"] = "0"
+        hold = remaining_lifetime_proof(path, proof)
+    elif condition == "missing":
+        proof["resources"].pop()
+        hold = remaining_lifetime_proof(path, proof)
+    path.write_text(json.dumps(proof))
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError):
+        reprice_completed(budget, path, hold=hold)
     assert budget.path.read_bytes() == before

@@ -472,6 +472,11 @@ class CampaignBudget:
         unpaid allowance. Late bills increase liability; they do not consume or
         release this hold automatically. No stage may be reused or repriced twice.
 
+        Schema 1 holds the full conservative estimate plus lag. Schema 2 holds
+        only its remaining liability: max(estimate - exact posted cost above
+        baseline, 0) + lag. The deduction is verified against current accounting
+        under the ledger lock; it does not assert billing settlement.
+
         Currently only Modal App IDs are eligible: storage and other resource
         kinds require a separate lifetime model. Hashed operator evidence is
         reviewable provenance, not provider authentication or a charge ceiling.
@@ -489,7 +494,7 @@ class CampaignBudget:
         resources, references = proof.get("resources"), proof.get("evidence")
         if (
             type(proof.get("schema_version")) is not int
-            or proof["schema_version"] != 1
+            or proof["schema_version"] not in {1, 2}
             or proof.get("purpose") != "completed_compute_lifetime_repricing"
             or proof.get("stage") != stage
             or proof.get("provider") != provider
@@ -523,9 +528,18 @@ class CampaignBudget:
         lifecycle = amount(proof.get("conservative_lifecycle_estimate_usd"))
         lag = amount(proof.get("unbilled_lag_usd"))
         original = amount(proof.get("original_planned_estimate_usd"))
-        if lifecycle <= 0 or lag <= 0 or hold != lifecycle + lag:
+        posted_deduction = Decimal(0)
+        remaining = lifecycle
+        if proof["schema_version"] == 2:
+            if proof.get("liability_basis") != "remaining_after_exact_posted_cost":
+                raise ValueError("Remaining liability requires an explicit accounting basis")
+            posted_deduction = amount(proof.get("posted_cost_deduction_usd"))
+            remaining = amount(proof.get("remaining_lifecycle_allowance_usd"))
+            if remaining != max(lifecycle - posted_deduction, Decimal(0)):
+                raise ValueError("Remaining allowance must deduct exactly the posted cost")
+        if lifecycle <= 0 or lag <= 0 or hold != remaining + lag:
             raise ValueError(
-                "Hold must equal a positive lifecycle estimate plus explicit unpaid lag"
+                "Hold must equal the lifecycle allowance plus explicit positive unpaid lag"
             )
         for reference in references:
             if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
@@ -548,6 +562,12 @@ class CampaignBudget:
             "evidence_sha256": evidence_sha256,
             "proof": proof,
         }
+        if proof["schema_version"] == 2:
+            event.update(
+                liability_basis=proof["liability_basis"],
+                posted_cost_deduction_usd=str(posted_deduction),
+                remaining_lifecycle_allowance_usd=str(remaining),
+            )
 
         def validate(state):
             row = state["stages"].get(stage)
@@ -576,6 +596,16 @@ class CampaignBudget:
                         raise ValueError(
                             "Lifecycle proof is stale or differs from resource accounting"
                         )
+            if proof["schema_version"] == 2:
+                posted = sum(
+                    (
+                        amount(resource["total_usd"]) - amount(resource["baseline_usd"])
+                        for resource in actual.values()
+                    ),
+                    Decimal(0),
+                )
+                if posted_deduction != posted:
+                    raise ValueError("Deduction must match exact attributable posted cost")
             floor = sum(map(amount, row["estimate"]["estimated_usd"][provider].values()))
             previous = amount(row["holds_usd"][provider])
             if original != floor or not hold < previous:
