@@ -40,14 +40,21 @@ NumPy<2 constraint; wire round trips are tested under that combination. Simulato
 dependencies remain isolated in the locked CPU environment.
 
 Wide camera recording additionally requires the explicit
-[HUD encoder thread-limit patch](../patches/README.md). The original SDK exhausted
-native threads in a 64-lane fixture. The bounded patch passed the real HUD wire
+[HUD recording patches](../patches/README.md). They bound per-camera codec threads
+and move recorder finalization off the asyncio event loop while retaining
+ownership through repeated cancellation. The original SDK exhausted native
+threads in a 64-lane fixture; its synchronous finalization also blocked unrelated
+async peers in a controlled exporter-delay reproduction. The cumulative patch
+at local revision `b31a73935084b8e56740f4787462798484e4f77c` passed the real HUD wire
 and ordinary recording lifecycle for 128 synthetic episodes: all 256 camera
 streams and 768 frames decoded correctly, with no encoder warnings or remaining
 camera threads. This is a recording test, not a live GPU or policy-quality result.
 The patch changes only agent-side recording; the hosted simulator uses the
 original HUD build. Follow the included immutable base, tree/hash checks and
-installation steps when reproducing the wide run.
+installation steps when reproducing the wide run. The existing best-effort
+15-second per-camera join timeout remains: a stuck encoder or exporter can still
+leave incomplete recording. The qualification reports observed complete streams,
+not a guarantee under arbitrary encoder failure.
 
 ## Run a cohort
 

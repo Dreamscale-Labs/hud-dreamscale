@@ -1,5 +1,78 @@
+diff --git a/hud/agents/robot/agent.py b/hud/agents/robot/agent.py
+index c9f27da..58195e9 100644
+--- a/hud/agents/robot/agent.py
++++ b/hud/agents/robot/agent.py
+@@ -108,8 +108,10 @@ class RobotAgent(Agent):
+             finally:
+                 # Drop the wire before telemetry flush so a claimed slot with no
+                 # further actions doesn't stall co-located peers at the barrier.
+-                await robot.close()
+-                recorder.close()
++                try:
++                    await robot.close()
++                finally:
++                    await recorder.aclose()
+                 if writer is not None:
+                     writer.end_episode()
+         finally:
+diff --git a/hud/telemetry/robot/recorder.py b/hud/telemetry/robot/recorder.py
+index 73203d9..4b35ede 100644
+--- a/hud/telemetry/robot/recorder.py
++++ b/hud/telemetry/robot/recorder.py
+@@ -14,6 +14,7 @@ gym bridges), so it lives under telemetry rather than either side:
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import logging
+ import uuid
+ from typing import TYPE_CHECKING, Any
+@@ -90,6 +91,7 @@ class TraceRecorder:
+         self._state_names = state_names or {}
+         self.reward = 0.0
+         self._video: VideoStreamer | None = None  # lazy, one per trace
++        self._close_task: asyncio.Task[None] | None = None
+         # The task instruction as an opening user step (shows on the timeline).
+         # A Run records its own prompt step, so only the bare-trace path emits one.
+         if prompt and run is None:
+@@ -156,6 +158,35 @@ class TraceRecorder:
+             self._video.finalize()
+             self._video = None
+ 
++    async def aclose(self) -> None:
++        """Flush video off the event loop, deferring cancellation until close finishes.
++
++        Concurrent async callers share the same flush. Stop recording before
++        closing; do not call synchronous ``close`` concurrently with this method.
++        The synchronous API's best-effort encoder timeout/error policy is unchanged.
++        """
++        if self._close_task is None:
++            self._close_task = asyncio.create_task(asyncio.to_thread(self.close))
++        task = self._close_task
++        cancelled = None
++        try:
++            while not task.done():
++                try:
++                    await asyncio.shield(task)
++                except asyncio.CancelledError as exc:
++                    cancelled = exc
++                except Exception:
++                    # Retrieve the error below without replacing prior cancellation.
++                    break
++            try:
++                task.result()
++            finally:
++                if cancelled is not None:
++                    raise cancelled
++        finally:
++            if self._close_task is task:
++                self._close_task = None
++
+ 
+ class JobRecorder:
+     """Records a vectorized env as one Job of per-episode traces.
 diff --git a/hud/telemetry/robot/video.py b/hud/telemetry/robot/video.py
-index 0435878eecf1d0a2ddb071dc6919c960483501ab..44abf64b3cc57797b31fb0073e8715da60c793ba 100644
+index 0435878..44abf64 100644
 --- a/hud/telemetry/robot/video.py
 +++ b/hud/telemetry/robot/video.py
 @@ -36,6 +36,9 @@ class SegmentEncoder:
@@ -32,9 +105,270 @@ index 0435878eecf1d0a2ddb071dc6919c960483501ab..44abf64b3cc57797b31fb0073e8715da
                      stream.codec_context.time_base = Fraction(1, self.fps)
                      # Fixed GOP (scenecut off) → each fragment is a closed, seekable GOP;
                      # pinned Main/3.0 so the viewer's MSE codec string is fixed (avc1.4d401e).
+diff --git a/hud/telemetry/tests/test_robot_recorder_async.py b/hud/telemetry/tests/test_robot_recorder_async.py
+new file mode 100644
+index 0000000..ccc3951
+--- /dev/null
++++ b/hud/telemetry/tests/test_robot_recorder_async.py
+@@ -0,0 +1,255 @@
++"""Real codec teardown must not stall unrelated async robot connections."""
++
++from __future__ import annotations
++
++import asyncio
++import base64
++import io
++import threading
++from collections import defaultdict
++from types import SimpleNamespace
++from uuid import uuid4
++
++import numpy as np
++import pytest
++
++from hud.agents.robot import agent as agent_module
++from hud.agents.types import VideoSegmentStep
++from hud.telemetry.robot.recorder import TraceRecorder
++
++av = pytest.importorskip("av")
++CAMERAS = ("agentview_image", "robot0_eye_in_hand_image")
++
++
++class SegmentSink:
++    def __init__(self):
++        self.started = threading.Event()
++        self.release = threading.Event()
++        self.segments = defaultdict(list)
++
++    def emit(self, step, *, trace_id):
++        self.started.set()
++        assert self.release.wait(3), "test must release the slow external exporter"
++        self.segments[(trace_id, step.camera)].append(step)
++
++    def assert_streams(self, trace_ids):
++        assert set(self.segments) == {(t, c) for t in trace_ids for c in CAMERAS}
++        for steps in self.segments.values():
++            ordered = sorted(steps, key=lambda step: step.index)
++            assert [s.index for s in ordered] == list(range(len(ordered)))
++            data = b"".join(base64.b64decode(s.segment["data"]) for s in ordered)
++            with av.open(io.BytesIO(data)) as container:
++                container.streams.video[0].codec_context.thread_count = 1
++                frames = list(container.decode(video=0))
++                assert len(frames) == 1
++                assert (frames[0].width, frames[0].height) == (64, 64)
++        assert not [t for t in threading.enumerate() if t.name.startswith("hud-robot-video-")]
++
++
++@pytest.fixture
++def sink(monkeypatch):
++    value = SegmentSink()
++    monkeypatch.setattr(VideoSegmentStep, "emit", lambda self, **kw: value.emit(self, **kw))
++    yield value
++    value.release.set()
++
++
++def observation(*, terminated=True):
++    return {
++        "terminated": [terminated],
++        "data": {
++            name: np.full((64, 64, 3), 40 + i * 120, np.uint8) for i, name in enumerate(CAMERAS)
++        },
++    }
++
++
++def make_agent(monkeypatch, *, error=None, robot_close=None):
++    class Robot:
++        def spaces(self):
++            return {"names": []}, None
++
++        def get_control_rate(self):
++            return 10
++
++        async def get_observation(self):
++            return observation(terminated=error is None)
++
++        async def close(self):
++            if robot_close is not None:
++                await robot_close()
++
++    async def connect(*_, **__):
++        return Robot()
++
++    class Model:
++        async def ainfer(self, _):
++            raise error
++
++    monkeypatch.setattr(agent_module.RobotClient, "connect", connect)
++    agent = agent_module.RobotAgent()
++    agent.model = Model()
++    agent.log_every = 0
++    run = SimpleNamespace(
++        prompt="offline recording",
++        trace_id=uuid4().hex,
++        client=SimpleNamespace(binding=lambda _: SimpleNamespace(name="robot")),
++        bindings={},
++        trace=SimpleNamespace(status=None, content=None),
++        record=lambda _: None,
++    )
++    return agent, run
++
++
++async def wait_started(sink):
++    assert await asyncio.to_thread(sink.started.wait, 2)
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("concurrency", [1, 8])
++async def test_agent_finalization_keeps_peer_responsive_and_preserves_video(
++    monkeypatch, sink, concurrency
++):
++    agents = [make_agent(monkeypatch) for _ in range(concurrency)]
++    tasks = [asyncio.create_task(agent(run)) for agent, run in agents]
++    try:
++        await wait_started(sink)
++        # The exporter is still blocked: a peer must run before teardown finishes.
++        peer = asyncio.create_task(asyncio.sleep(0.02, result="responsive"))
++        assert await asyncio.wait_for(peer, 0.5) == "responsive"
++        assert not any(task.done() for task in tasks)
++    finally:
++        sink.release.set()
++        await asyncio.gather(*tasks)
++    assert all(run.trace.status == "completed" for _, run in agents)
++    sink.assert_streams([run.trace_id for _, run in agents])
++
++
++@pytest.mark.asyncio
++async def test_agent_repeated_cancellation_waits_for_both_video_tails(monkeypatch, sink):
++    agent, run = make_agent(monkeypatch)
++    task = asyncio.create_task(agent(run))
++    try:
++        await wait_started(sink)
++        for _ in range(3):
++            task.cancel()
++            await asyncio.sleep(0.02)
++            assert not task.done(), "trace must remain open while encoder callbacks run"
++    finally:
++        sink.release.set()
++        with pytest.raises(asyncio.CancelledError):
++            await task
++    assert run.trace.status is None
++    sink.assert_streams([run.trace_id])
++
++
++@pytest.mark.asyncio
++async def test_cancellation_during_wire_close_still_flushes_recorder(monkeypatch, sink):
++    closing = asyncio.Event()
++    close_calls = 0
++
++    async def robot_close():
++        nonlocal close_calls
++        close_calls += 1
++        if close_calls == 1:
++            closing.set()
++            await asyncio.Future()
++
++    agent, run = make_agent(monkeypatch, robot_close=robot_close)
++    task = asyncio.create_task(agent(run))
++    try:
++        await asyncio.wait_for(closing.wait(), 1)
++        task.cancel()
++        await wait_started(sink)
++        assert not task.done()
++    finally:
++        sink.release.set()
++        with pytest.raises(asyncio.CancelledError):
++            await task
++    assert close_calls == 2
++    sink.assert_streams([run.trace_id])
++
++
++@pytest.mark.asyncio
++async def test_model_error_survives_video_finalization(monkeypatch, sink):
++    error = ValueError("model failed")
++    agent, run = make_agent(monkeypatch, error=error)
++    task = asyncio.create_task(agent(run))
++    try:
++        await wait_started(sink)
++        assert not task.done()
++    finally:
++        sink.release.set()
++        with pytest.raises(ValueError, match="model failed") as caught:
++            await task
++    assert caught.value is error
++    assert run.trace.status is None
++    sink.assert_streams([run.trace_id])
++
++
++@pytest.mark.asyncio
++async def test_async_close_is_shared_and_sync_api_still_works(sink):
++    run = SimpleNamespace(trace_id=uuid4().hex, record=lambda _: None)
++    recorder = TraceRecorder(run=run)
++    recorder.record_observation(observation()["data"], tick=0)
++    tasks = [asyncio.create_task(recorder.aclose()) for _ in range(2)]
++    try:
++        await wait_started(sink)
++        tasks[0].cancel()
++        await asyncio.sleep(0.02)
++        assert not any(t.done() for t in tasks)
++    finally:
++        sink.release.set()
++        with pytest.raises(asyncio.CancelledError):
++            await tasks[0]
++        await tasks[1]
++    await recorder.aclose()
++    recorder.close()
++    sink.assert_streams([run.trace_id])
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("cancel", [False, True])
++async def test_unexpected_close_error_is_retrieved_after_cancellation(cancel):
++    started, release = threading.Event(), threading.Event()
++    error = RuntimeError("close failed")
++
++    class FailingRecorder(TraceRecorder):
++        def close(self):
++            started.set()
++            assert release.wait(2)
++            raise error
++
++    recorder = FailingRecorder(trace_id=uuid4().hex)
++    task = asyncio.create_task(recorder.aclose())
++    try:
++        assert await asyncio.to_thread(started.wait, 1)
++        if cancel:
++            task.cancel()
++            await asyncio.sleep(0.01)
++            assert not task.done()
++    finally:
++        release.set()
++    with pytest.raises(asyncio.CancelledError if cancel else RuntimeError) as caught:
++        await task
++    if cancel:
++        assert caught.value.__context__ is error
++    else:
++        assert caught.value is error
++
++
++@pytest.mark.asyncio
++async def test_encoder_dispatch_errors_remain_logged_without_masking_model_error(
++    monkeypatch, caplog
++):
++    def failed_emit(*_, **__):
++        raise RuntimeError("exporter failed")
++
++    monkeypatch.setattr(VideoSegmentStep, "emit", failed_emit)
++    error = ValueError("original model failure")
++    agent, run = make_agent(monkeypatch, error=error)
++    with pytest.raises(ValueError, match="original model failure") as caught:
++        await agent(run)
++    assert caught.value is error
++    assert "video segment dispatch failed" in caplog.text
++    assert "exporter failed" in caplog.text
++    assert not [t for t in threading.enumerate() if t.name.startswith("hud-robot-video-")]
 diff --git a/hud/telemetry/tests/test_robot_video.py b/hud/telemetry/tests/test_robot_video.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a1ce5797d398206738ac49ce1f7450823ba48ba7
+index 0000000..a1ce579
 --- /dev/null
 +++ b/hud/telemetry/tests/test_robot_video.py
 @@ -0,0 +1,98 @@

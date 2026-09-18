@@ -1,12 +1,15 @@
 {
   "base_revision": "0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
-  "expected_patched_tree": "470d256209385e6e4fac8e2b3b5ad086681625b2",
+  "expected_patched_tree": "b5d9f588e1dcbe41e6b580cb3073479805293fdb",
   "files": {
+    "hud/agents/robot/agent.py": "9f1fdcb297eaf69db4724f3561d7ec99b57523a0b7c1d65b49403abbf436270a",
+    "hud/telemetry/robot/recorder.py": "2cd5c24c2dab435c2bf716e899e55a69eadc51bb43c3ef1253bb77b1070db01c",
     "hud/telemetry/robot/video.py": "abad4946b2d38bb90c1010ae6f988facebfc59937c4e28b08c050721e2544c44",
+    "hud/telemetry/tests/test_robot_recorder_async.py": "5badc84766b32d090cda977d24bd75f13ab0746e207c2c4546f5fdc3bc1815e8",
     "hud/telemetry/tests/test_robot_video.py": "73b084aab01406f1b16298ca3f4b4a44b69c591bf0f1e3037f87ac8a88a72a24"
   },
-  "internal_qualification_revision": "b6afb3f29026a31df6d6f26faf20403cd95fa530",
+  "internal_qualification_revision": "b31a73935084b8e56740f4787462798484e4f77c",
   "note": "The internal qualification commit is not an upstream release. Recreated commits may have different IDs; compare tree and file hashes and record the actual local commit.",
-  "patch_sha256": "0e01be301f8e8a5b8ae14254ce2d9e8e22bff0cbb90a135066f088c7f4370ce4",
+  "patch_sha256": "6c48151af1980fad460dcdd3d255a049111220cf2198af0b9de3da5ef5737a28",
   "repository": "https://github.com/hud-evals/hud-python"
 }
