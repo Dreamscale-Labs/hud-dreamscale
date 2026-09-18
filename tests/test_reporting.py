@@ -267,3 +267,220 @@ def test_touching_and_unclosed_episodes_are_not_parallel_evidence():
     report = concurrency_report(events)
     assert report["active_episodes"]["peak_distinct_lanes"] == 1
     assert report["errors"] == ["Active episode intervals were not closed"]
+
+
+def test_checkpoint_phase_distributions_preserve_null_missing_and_durability():
+    rows = [
+        {
+            "event": "journal_checkpoint",
+            "phase": "before_post",
+            "duration_s": 10,
+            "lock_wait_s": 6,
+            "dispatch_delay_s": 0.25,
+            "executor_queue_s": 2,
+            "write_flush_fsync_s": 0.5,
+            "resume_delay_s": 1.25,
+            "durable": True,
+        },
+        {
+            "event": "journal_checkpoint",
+            "phase": "before_post",
+            "duration_s": 1,
+            "lock_wait_s": 1,
+            "dispatch_delay_s": None,
+            "executor_queue_s": None,
+            "write_flush_fsync_s": None,
+            "resume_delay_s": None,
+            "durable": False,
+        },
+        {"event": "journal_checkpoint", "phase": "before_post", "durable": None},
+        {
+            "event": "journal_checkpoint",
+            "phase": "completed",
+            "duration_s": 0.2,
+            "lock_wait_s": 0,
+            "dispatch_delay_s": 0,
+            "executor_queue_s": 0,
+            "write_flush_fsync_s": 0.2,
+            "resume_delay_s": 0,
+            "durable": True,
+        },
+        {"event": "journal_checkpoint", "phase": "stopped"},
+    ]
+    report = timing_report(rows)
+    checkpoints = report["journal_checkpoints"]
+    assert checkpoints["count"] == 5
+    before = checkpoints["by_phase"]["before_post"]
+    assert before["count"] == 3
+    assert before["durable"] == {"true": 1, "false": 1, "unknown": 1, "missing": 0, "null": 1}
+    assert before["timings_s"]["executor_queue_s"] == {
+        "n": 1,
+        "min": 2,
+        "p50": 2,
+        "p95": 2,
+        "max": 2,
+        "unknown": 2,
+        "missing": 1,
+        "null": 1,
+    }
+    assert before["timings_s"]["lock_wait_s"]["p50"] == 3.5
+    terminal = checkpoints["by_phase"]["completed"]["timings_s"]
+    assert terminal["executor_queue_s"]["n"] == 1 and terminal["executor_queue_s"]["p50"] == 0
+    unknown = checkpoints["by_phase"]["stopped"]
+    assert unknown["durable"]["unknown"] == unknown["durable"]["missing"] == 1
+    assert unknown["timings_s"]["duration_s"]["n"] == 0
+    assert unknown["timings_s"]["duration_s"]["p50"] is None
+    # Raw measurements cannot fabricate old coarse fields or model calls.
+    assert report["journal_before_post_s"]["n"] == report["journal_terminal_s"]["n"] == 0
+    assert report["successful_model_calls_s"]["n"] == 0
+
+
+def test_journal_subspans_and_resubmissions_do_not_add_to_logical_model_duration():
+    rows = []
+    for index, request in enumerate(("failed-1", "failed-2", "success")):
+        rows.extend(
+            [
+                {
+                    "event": "journal_checkpoint",
+                    "phase": "before_post",
+                    "duration_s": 1,
+                    "lock_wait_s": 0.6,
+                    "dispatch_delay_s": 0.1,
+                    "executor_queue_s": 0.2,
+                    "write_flush_fsync_s": 0.05,
+                    "resume_delay_s": 0.05,
+                    "durable": True,
+                },
+                {
+                    "event": "inference_post",
+                    "duration_s": 1,
+                    "request_id": request,
+                    "logical_call_id": "one-call",
+                    "attempt_index": index,
+                    "response_received": True,
+                    "journal_before_post_s": 1,
+                },
+            ]
+        )
+        if index < 2:
+            rows.extend(
+                [
+                    {"event": "inference_failed", "request_id": request, "journal_terminal_s": 0.2},
+                    {
+                        "event": "inference_resubmission",
+                        "request_id": request,
+                        "logical_call_id": "one-call",
+                        "attempt_index": index,
+                    },
+                ]
+            )
+    rows.extend(
+        [
+            {
+                "event": "provider_inference",
+                "duration_s": 10,
+                "request_id": "success",
+                "logical_call_id": "one-call",
+                "journal_before_post_s": 1,
+                "journal_terminal_s": 0.2,
+            },
+            {"event": "inference", "duration_s": 10.1, "episode_id": "episode"},
+            {"event": "inference_attempt_finished", "duration_s": 10.1, "outcome": "success"},
+        ]
+    )
+    report = timing_report(rows)
+    assert report["successful_model_calls_s"] == distribution([10.1])
+    assert report["all_model_attempts_s"] == distribution([10.1])
+    assert report["sdk_post_attempts_s"] == distribution([1, 1, 1])
+    assert report["journal_before_post_s"] == distribution([1, 1, 1])
+    assert report["journal_terminal_s"] == distribution([0.2, 0.2, 0.2])
+    assert report["journal_checkpoints"]["count"] == 3
+    assert report["request_counts"]["terminal_failures"] == 2
+    assert report["request_counts"]["resubmission_decisions"] == 2
+    assert report["request_counts"]["resubmitted_post_attempts"] == 2
+    assert report["request_counts"]["post_attempts_without_known_attempt_index"] == 0
+    assert report["model_attempt_outcomes"] == {"success": 1}
+    data = result()
+    before = cohort_gate(data, concurrency=1)
+    data["timing"] = report
+    assert cohort_gate(data, concurrency=1) == before
+    data["runs"][1]["integration_error"] = True
+    assert not cohort_gate(data, concurrency=1)["passed"]
+
+
+def test_resubmission_decision_does_not_imply_replacement_post_and_legacy_is_unknown():
+    report = timing_report(
+        [
+            {"event": "inference_resubmission", "request_id": "original"},
+            {
+                "event": "inference_post",
+                "request_id": "legacy",
+                "duration_s": 2,
+                "response_received": False,
+            },
+        ]
+    )
+    assert report["request_counts"]["resubmission_decisions"] == 1
+    assert report["request_counts"]["resubmitted_post_attempts"] == 0
+    assert report["request_counts"]["post_attempts_without_known_attempt_index"] == 1
+    assert report["journal_checkpoints"] == {"count": 0, "by_phase": {}}
+
+
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf"), True, "1"])
+def test_raw_journal_timing_rejects_invalid_measurements(value):
+    with pytest.raises(ValueError):
+        timing_report(
+            [{"event": "journal_checkpoint", "phase": "before_post", "executor_queue_s": value}]
+        )
+
+
+def test_raw_journal_durability_rejects_non_boolean_and_keeps_unknown_phase():
+    with pytest.raises(ValueError):
+        timing_report([{"event": "journal_checkpoint", "durable": 1}])
+    report = timing_report([{"event": "journal_checkpoint", "duration_s": None}])
+    assert (
+        report["journal_checkpoints"]["by_phase"]["<unknown>"]["timings_s"]["duration_s"]["null"]
+        == 1
+    )
+
+
+async def test_real_sdk_resubmission_events_report_one_complete_model_call(tmp_path):
+    from hud_dropbear.pooled_agent import PooledInput, PooledModel
+    from tests.test_pooled import observation
+    from tests.test_pooled_resubmission import RejectionServer
+
+    server, events = RejectionServer(rejections=2), []
+    server.resolution_delay = 0.002
+    server.journal = tmp_path / "requests.jsonl"
+
+    def emit(name, **fields):
+        events.append({"event": name, **fields})
+
+    async with server.provider(
+        concurrency=1,
+        max_not_admitted_resubmissions=2,
+        journal_path=server.journal,
+        emit=emit,
+    ) as provider:
+        model = PooledModel(
+            provider,
+            slot=0,
+            episode_id="episode",
+            trace_id="trace",
+            seed=197,
+            emit=emit,
+            fields={"episode_id": "episode"},
+        )
+        await model.ainfer(PooledInput(observation(), "pick up the bowl", "0" * 64))
+    report = timing_report(events)
+    logical = next(row for row in events if row["event"] == "inference")
+    assert logical["duration_s"] >= 2 * server.resolution_delay
+    assert report["successful_model_calls_s"] == distribution([logical["duration_s"]])
+    assert report["model_attempt_outcomes"] == {"completed": 1}
+    assert report["request_counts"]["post_attempts"] == 3
+    assert report["request_counts"]["terminal_failures"] == 2
+    assert report["request_counts"]["resubmission_decisions"] == 2
+    assert report["request_counts"]["resubmitted_post_attempts"] == 2
+    assert report["journal_checkpoints"]["by_phase"]["before_post"]["count"] == 3
+    assert report["journal_checkpoints"]["by_phase"]["failed"]["durable"]["true"] == 2
+    assert report["journal_checkpoints"]["by_phase"]["completed"]["durable"]["true"] == 1

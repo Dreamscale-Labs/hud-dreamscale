@@ -29,6 +29,52 @@ def distribution(values):
     }
 
 
+def journal_checkpoint_report(events):
+    """Summarize observed spans independently; missing measurements stay unknown."""
+    phases = defaultdict(list)
+    for row in events:
+        phase = row.get("phase")
+        phases[phase if isinstance(phase, str) and phase else "<unknown>"].append(row)
+
+    def measurements(rows, field):
+        missing = sum(field not in row for row in rows)
+        null = sum(field in row and row[field] is None for row in rows)
+        values = [row[field] for row in rows if row.get(field) is not None]
+        if any(type(value) not in (int, float) for value in values):
+            raise ValueError("Journal timing samples must be numeric or unknown")
+        return {**distribution(values), "unknown": missing + null, "missing": missing, "null": null}
+
+    result = {}
+    for phase, rows in sorted(phases.items()):
+        known = [row["durable"] for row in rows if row.get("durable") is not None]
+        if any(type(value) is not bool for value in known):
+            raise ValueError("Journal durability must be boolean or unknown")
+        missing = sum("durable" not in row for row in rows)
+        null = sum("durable" in row and row["durable"] is None for row in rows)
+        result[phase] = {
+            "count": len(rows),
+            "durable": {
+                "true": sum(value is True for value in known),
+                "false": sum(value is False for value in known),
+                "unknown": missing + null,
+                "missing": missing,
+                "null": null,
+            },
+            "timings_s": {
+                field: measurements(rows, field)
+                for field in (
+                    "duration_s",
+                    "lock_wait_s",
+                    "dispatch_delay_s",
+                    "executor_queue_s",
+                    "write_flush_fsync_s",
+                    "resume_delay_s",
+                )
+            },
+        }
+    return {"count": sum(len(rows) for rows in phases.values()), "by_phase": result}
+
+
 def timing_report(events):
     """Do not add overlapping SDK/server/GPU spans or subtract different clocks."""
     episode_starts, first_inference = {}, {}
@@ -39,10 +85,16 @@ def timing_report(events):
     provider_create, discovery = [], []
     attempts, posts, outcomes = [], [], defaultdict(int)
     journal_before_post, journal_terminal = [], []
+    checkpoints = []
+    resubmission_decisions = resubmitted_posts = unknown_attempt_indices = 0
     transport_uncertain, recovery, terminal_failures, fenced = set(), set(), set(), set()
     for row in events:
         event, episode = row["event"], row.get("episode_id")
         elapsed = row.get("elapsed_s")
+        if event == "journal_checkpoint":
+            checkpoints.append(row)
+        elif event == "inference_resubmission":
+            resubmission_decisions += 1
         if event == "inference_post" and "journal_before_post_s" in row:
             journal_before_post.append(row["journal_before_post_s"])
         if (
@@ -90,6 +142,11 @@ def timing_report(events):
             outcomes[row["outcome"]] += 1
         elif event == "inference_post":
             posts.append(row["duration_s"])
+            index = row.get("attempt_index")
+            if type(index) is int and index >= 0:
+                resubmitted_posts += index > 0
+            else:
+                unknown_attempt_indices += 1
             if not row.get("response_received"):
                 transport_uncertain.add(row.get("request_id"))
         elif event == "inference_recovery":
@@ -119,12 +176,16 @@ def timing_report(events):
         "sdk_post_attempts_s": distribution(posts),
         "journal_before_post_s": distribution(journal_before_post),
         "journal_terminal_s": distribution(journal_terminal),
+        "journal_checkpoints": journal_checkpoint_report(checkpoints),
         "request_counts": {
             "post_attempts": len(posts),
             "unknown_post_outcomes": len(transport_uncertain),
             "recovery_requests": len(recovery),
             "terminal_failures": len(terminal_failures),
             "fenced_requests": len(fenced),
+            "resubmission_decisions": resubmission_decisions,
+            "resubmitted_post_attempts": resubmitted_posts,
+            "post_attempts_without_known_attempt_index": unknown_attempt_indices,
         },
         "encoding_and_client_queue_s": distribution(encoding),
         "server_reported_ms": {key: distribution(vals) for key, vals in sorted(server.items())},
@@ -137,11 +198,16 @@ def timing_report(events):
             "interpreter launch and earlier standard-library imports are excluded. Full command "
             "startup requires an external parent-process timestamp.",
             "Successful model calls include client encoding, durable request journaling and "
-            "any recovery. SDK POST attempts exclude those outer costs. Failed and cancelled "
+            "any recovery and bounded resubmissions. SDK POST attempts exclude those outer "
+            "costs. Failed and cancelled "
             "attempts are retained separately, never treated as fast successful responses.",
-            "Journal phases include shared-lock wait, write, flush and fsync, and overlap the "
-            "outer model call. A cancellation before submission has no POST event; its journal "
-            "time remains unseparated inside the cancelled model-attempt duration.",
+            "Raw journal checkpoints separate lock wait, async dispatch, executor queue, "
+            "write/flush/fsync and event-loop resume by phase. They overlap the outer model "
+            "call and existing coarse journal fields; do not add them. Missing and null spans "
+            "remain unknown, including older sidecars without checkpoint instrumentation.",
+            "Resubmission decisions can be cancelled before a replacement POST. Count actual "
+            "replacement POSTs separately; successful recovery never removes a failed request "
+            "or changes episode integration-error acceptance.",
         ],
     }
 
