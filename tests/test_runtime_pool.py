@@ -185,9 +185,7 @@ async def test_cleanup_logging_failures_preserve_all_owner_teardown_and_errors(d
             cleanup_events.append((event, fields["lane_id"]))
             raise OSError("evidence disk full")
 
-    pool = RuntimePool(
-        provider, cohort_tasks(3), concurrency=3, emit=emit, cleanup_timeout=0.01
-    )
+    pool = RuntimePool(provider, cohort_tasks(3), concurrency=3, emit=emit, cleanup_timeout=0.01)
     await pool.__aenter__()
     if drain_timeout:
         await pool.lanes[0].lock.acquire()
@@ -199,9 +197,11 @@ async def test_cleanup_logging_failures_preserve_all_owner_teardown_and_errors(d
             pool.lanes[0].lock.release()
 
     assert sorted(closed) == [0, 1, 2]
-    assert cleanup_events == (
-        [("episode_cleanup_error", 0)] if drain_timeout else []
-    ) + [("simulator_closed", 0), ("simulator_cleanup_error", 1), ("simulator_closed", 2)]
+    assert cleanup_events == ([("episode_cleanup_error", 0)] if drain_timeout else []) + [
+        ("simulator_closed", 0),
+        ("simulator_cleanup_error", 1),
+        ("simulator_closed", 2),
+    ]
     errors = failure.value.exceptions
     assert sum(type(error) is OSError for error in errors) == 3 + drain_timeout
     assert sum(isinstance(error, RuntimeError) for error in errors) == 1
