@@ -8,6 +8,7 @@ from hud.telemetry.context import get_current_trace_id
 
 from hud_dropbear.pooled_cli import cohort_tasks
 from hud_dropbear.runtime_pool import RuntimePool
+from hud_dropbear.telemetry import CURRENT_TASK
 
 
 @pytest.fixture(autouse=True)
@@ -163,3 +164,81 @@ async def test_lazy_hud_runtime_is_initialized_before_pool_becomes_ready():
                 "simulator_control_ready",
                 "simulator_acquired",
             ]
+
+
+@pytest.mark.parametrize("drain_timeout", [False, True])
+async def test_cleanup_logging_failures_preserve_all_owner_teardown_and_errors(drain_timeout):
+    closed, cleanup_events = [], []
+
+    @asynccontextmanager
+    async def provider(task):
+        slot = task.columns["lane_id"]
+        try:
+            yield Runtime(f"tcp://lane-{slot}")
+        finally:
+            closed.append(slot)
+            if slot == 1:
+                raise RuntimeError("owner cleanup failed")
+
+    def emit(event, **fields):
+        if event in ("episode_cleanup_error", "simulator_cleanup_error", "simulator_closed"):
+            cleanup_events.append((event, fields["lane_id"]))
+            raise OSError("evidence disk full")
+
+    pool = RuntimePool(
+        provider, cohort_tasks(3), concurrency=3, emit=emit, cleanup_timeout=0.01
+    )
+    await pool.__aenter__()
+    if drain_timeout:
+        await pool.lanes[0].lock.acquire()
+    try:
+        with pytest.raises(ExceptionGroup, match="Simulator cleanup failed") as failure:
+            await pool.close()
+    finally:
+        if drain_timeout:
+            pool.lanes[0].lock.release()
+
+    assert sorted(closed) == [0, 1, 2]
+    assert cleanup_events == (
+        [("episode_cleanup_error", 0)] if drain_timeout else []
+    ) + [("simulator_closed", 0), ("simulator_cleanup_error", 1), ("simulator_closed", 2)]
+    errors = failure.value.exceptions
+    assert sum(type(error) is OSError for error in errors) == 3 + drain_timeout
+    assert sum(isinstance(error, RuntimeError) for error in errors) == 1
+    assert sum(isinstance(error, TimeoutError) for error in errors) == drain_timeout
+    assert not pool.cleanup_confirmed and "OSError" in pool.cleanup_error
+    assert pool._depth == 0
+
+
+@pytest.mark.parametrize(
+    "failed_event", ["environment_starting", "environment_acquired", "episode_released"]
+)
+async def test_episode_logging_failure_always_clears_lane_and_task_context(failed_event):
+    closed = []
+
+    @asynccontextmanager
+    async def provider(task):
+        try:
+            yield Runtime("tcp://lane-0")
+        finally:
+            closed.append(0)
+
+    def emit(event, **fields):
+        if event == failed_event:
+            raise OSError("evidence disk full")
+
+    rows = cohort_tasks(1)
+    token = CURRENT_TASK.set("outer-task")
+    try:
+        async with RuntimePool(provider, rows, concurrency=1, emit=emit) as pool:
+            with pytest.raises(OSError, match="evidence disk full"):
+                async with pool(rows[0]):
+                    assert CURRENT_TASK.get() == rows[0].slug
+            lane = pool.lanes[0]
+            assert lane.current_task is None and lane.episode_id is None
+            assert not lane.lock.locked()
+            assert CURRENT_TASK.get() == "outer-task"
+        assert pool.cleanup_confirmed
+    finally:
+        CURRENT_TASK.reset(token)
+    assert closed == [0]

@@ -161,17 +161,19 @@ class RuntimePool:
                 lane_episode_index=lane.episodes - 1,
                 case_index=(task.columns or {}).get("case_index"),
             )
-            self.emit("environment_starting", **fields)
-            self.emit("environment_acquired", **fields)
             try:
+                self.emit("environment_starting", **fields)
+                self.emit("environment_acquired", **fields)
                 yield lane.runtime
             finally:
-                self.emit("episode_released", **fields)
-                lane.current_task = None
-                lane.episode_id = None
-                # HUD's shielded cleanup can run in a copied context: tokens
-                # cannot be reset there, so restore the previous value directly.
-                CURRENT_TASK.set(previous)
+                try:
+                    self.emit("episode_released", **fields)
+                finally:
+                    lane.current_task = None
+                    lane.episode_id = None
+                    # HUD's shielded cleanup can run in a copied context: tokens
+                    # cannot be reset there, so restore the previous value directly.
+                    CURRENT_TASK.set(previous)
 
     async def close(self):
         if self._closed:
@@ -195,10 +197,19 @@ class RuntimePool:
                 *(drain_lane(lane) for lane in self.lanes), return_exceptions=True
             )
             errors = []
+
+            def emit_cleanup(event, **fields):
+                try:
+                    self.emit(event, **fields)
+                except BaseException as exc:
+                    # Failed evidence writes still fail the run, but must never
+                    # prevent paid teardown or processing another owner's receipt.
+                    errors.append(exc)
+
             for lane, result in zip(self.lanes, drained, strict=True):
                 if isinstance(result, BaseException):
                     errors.append(result)
-                    self.emit(
+                    emit_cleanup(
                         "episode_cleanup_error", lane_id=lane.slot, error_type=type(result).__name__
                     )
             # Even a wedged borrowed driver must not skip paid runtime teardown.
@@ -208,11 +219,11 @@ class RuntimePool:
             for slot, result in enumerate(results):
                 if isinstance(result, BaseException):
                     errors.append(result)
-                    self.emit(
+                    emit_cleanup(
                         "simulator_cleanup_error", lane_id=slot, error_type=type(result).__name__
                     )
                 else:
-                    self.emit("simulator_closed", lane_id=slot)
+                    emit_cleanup("simulator_closed", lane_id=slot)
             if errors:
                 self.cleanup_error = ", ".join(type(error).__name__ for error in errors)
                 raise BaseExceptionGroup("Simulator cleanup failed", errors)
