@@ -78,6 +78,8 @@ class PooledProvider:
     Journal timing fields measure existing checkpoint calls, including lock wait and
     fsync; they do not remove durability or optimize inference latency. Cancellation
     before submission has no POST event; its total time remains in the agent metric.
+    Optional resubmissions require atomic, identity-checked non-admission and use a
+    fresh request identity for the unchanged input. Uncertain work is never replayed.
     """
 
     def __init__(
@@ -93,6 +95,7 @@ class PooledProvider:
         close_timeout=120,
         poll_interval=1,
         request_timeout=5,
+        max_not_admitted_resubmissions=0,
         encoding_workers=4,
         expected_release_id=None,
         expected_release_sha256=None,
@@ -111,6 +114,11 @@ class PooledProvider:
                 raise ValueError(f"{name} must be finite and positive")
         if type(encoding_workers) is not int or not 1 <= encoding_workers <= 64:
             raise ValueError("encoding_workers must be an integer from 1 to 64")
+        if (
+            type(max_not_admitted_resubmissions) is not int
+            or not 0 <= max_not_admitted_resubmissions <= 2
+        ):
+            raise ValueError("max_not_admitted_resubmissions must be an integer from 0 to 2")
         self.concurrency = concurrency
         self.capacity = 8 * math.ceil(concurrency / 8)
         self.emit = emit or (lambda event, **fields: None)
@@ -118,6 +126,7 @@ class PooledProvider:
         self.ready_timeout, self.recovery_timeout = ready_timeout, recovery_timeout
         self.close_timeout, self.poll_interval = close_timeout, poll_interval
         self.request_timeout = request_timeout
+        self.max_not_admitted_resubmissions = max_not_admitted_resubmissions
         self.expected_release_id = expected_release_id
         self.expected_release_sha256 = expected_release_sha256
         self._factory = client_factory
@@ -182,6 +191,7 @@ class PooledProvider:
     async def _checkpoint(self, phase, **fields):
         if self._journal is None:
             return
+        started = time.monotonic()
         row = {
             "phase": phase,
             "unix_s": time.time(),
@@ -190,14 +200,67 @@ class PooledProvider:
         }
         line = json.dumps(row, allow_nan=False) + "\n"
 
-        def write():
-            self._journal.write(line)
-            self._journal.flush()
-            os.fsync(self._journal.fileno())
+        stamps = {}
+        failure = None
 
-        async with self._journal_lock:
-            # A cancelled write must finish before another write or file close.
-            await self._protected(write=asyncio.to_thread(write))
+        def write():
+            stamps["write_started"] = time.monotonic()
+            try:
+                self._journal.write(line)
+                self._journal.flush()
+                os.fsync(self._journal.fileno())
+                stamps["durable"] = True
+            finally:
+                stamps["write_finished"] = time.monotonic()
+
+        async def dispatch_write():
+            stamps["executor_submitted"] = time.monotonic()
+            await asyncio.to_thread(write)
+
+        lock_started = time.monotonic()
+        try:
+            async with self._journal_lock:
+                stamps["lock_acquired"] = time.monotonic()
+                stamps["submitted"] = time.monotonic()
+                # A cancelled write must finish before another write or file close.
+                await self._protected(write=dispatch_write())
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            finished = time.monotonic()
+            emit = self._cleanup_event if self._closing else self._event
+            try:
+                emit(
+                    "journal_checkpoint",
+                    phase=phase,
+                    duration_s=finished - started,
+                    lock_wait_s=stamps.get("lock_acquired", finished) - lock_started,
+                    dispatch_delay_s=(
+                        stamps["executor_submitted"] - stamps["submitted"]
+                        if "executor_submitted" in stamps
+                        else None
+                    ),
+                    executor_queue_s=(
+                        stamps["write_started"] - stamps["executor_submitted"]
+                        if "write_started" in stamps
+                        else None
+                    ),
+                    write_flush_fsync_s=(
+                        stamps["write_finished"] - stamps["write_started"]
+                        if "write_finished" in stamps
+                        else None
+                    ),
+                    resume_delay_s=(
+                        finished - stamps["write_finished"] if "write_finished" in stamps else None
+                    ),
+                    durable=stamps.get("durable", False),
+                    **{k: v for k, v in fields.items() if k != "deployment_id"},
+                )
+            except BaseException as exc:
+                if failure is None:
+                    raise
+                failure.add_note(f"Journal timing also failed: {type(exc).__name__}")
 
     @staticmethod
     async def _protected(*, write):
@@ -415,7 +478,7 @@ class PooledProvider:
             )
             raise
 
-    async def _recover(self, client, identity):
+    async def _recover(self, client, identity, *, require_atomic_resolution=False):
         """GET first, then atomically resolve unknown work. Never replay the inference POST."""
         self._event(
             "inference_recovery", **{k: v for k, v in identity.items() if k != "deployment_id"}
@@ -430,10 +493,15 @@ class PooledProvider:
                     except (httpx.TransportError, DropbearError):
                         result = None
                     if result is not None and self._check_identity(result, identity) != "pending":
-                        return result
+                        if not (
+                            require_atomic_resolution
+                            and result.get("status") == "failed"
+                            and result["error"]["code"] == "request_not_admitted"
+                        ):
+                            return result, "result_lookup"
                     result = await self._recovery_call(client, identity, operation="resolve")
                     if self._check_identity(result, identity) != "pending":
-                        return result
+                        return result, "resolve"
                 except (httpx.TransportError, DropbearError):
                     # Even an uncertain resolution must retain this same identity.
                     pass
@@ -452,14 +520,22 @@ class PooledProvider:
         self._active.add(current)
         identity = None
         submitted = False
+        attempt_index = 0
+        logical_call_id = str(uuid4())
         journal_before_post_s = journal_terminal_s = 0.0
         started = time.monotonic()
 
-        async def terminal_checkpoint(phase):
+        async def terminal_checkpoint(phase, **details):
             nonlocal journal_terminal_s
             checkpoint_started = time.monotonic()
             try:
-                await self._checkpoint(phase, **identity)
+                await self._checkpoint(
+                    phase,
+                    **identity,
+                    logical_call_id=logical_call_id,
+                    attempt_index=attempt_index,
+                    **details,
+                )
             finally:
                 journal_terminal_s += time.monotonic() - checkpoint_started
 
@@ -470,83 +546,131 @@ class PooledProvider:
                     raise ValueError("Pooled LIBERO requires native raw360 RGB uint8 cameras")
             # Own the arrays while PNG encoding runs outside the asyncio event loop.
             raw = {key: np.array(value, copy=True) for key, value in observation.items()}
-            identity = {
-                "deployment_id": self.deployment_id,
-                "robot_slot": slot,
-                "request_id": str(uuid4()),
-                "sequence": self._sequences[slot],
-                "episode_id": episode_id,
-            }
-            correlation = {k: v for k, v in identity.items() if k != "deployment_id"}
-            correlation["trace_id"] = trace_id
-            encoding_started = time.monotonic()
-            async with self._encoding_gate:
-                request = await asyncio.get_running_loop().run_in_executor(
-                    self._encoder,
-                    functools.partial(
-                        action_request,
+            for attempt_index in range(self.max_not_admitted_resubmissions + 1):
+                if self._closing or not self._ready or time.time() >= self.deployment["expires_at"]:
+                    raise SlotFencedError("The owned deployment cannot accept another request")
+                submitted = False
+                journal_before_post_s = journal_terminal_s = 0.0
+                identity = {
+                    "deployment_id": self.deployment_id,
+                    "robot_slot": slot,
+                    "request_id": str(uuid4()),
+                    "sequence": self._sequences[slot],
+                    "episode_id": episode_id,
+                }
+                correlation = {k: v for k, v in identity.items() if k != "deployment_id"}
+                correlation.update(
+                    trace_id=trace_id, logical_call_id=logical_call_id, attempt_index=attempt_index
+                )
+                encoding_started = time.monotonic()
+                async with self._encoding_gate:
+                    request = await asyncio.get_running_loop().run_in_executor(
+                        self._encoder,
+                        functools.partial(
+                            action_request,
+                            **identity,
+                            noise_seed=noise_seed,
+                            instruction=instruction,
+                            observation=raw,
+                        ),
+                    )
+                encode_s = time.monotonic() - encoding_started
+                self._event("inference_encode", duration_s=encode_s, **correlation)
+                checkpoint_started = time.monotonic()
+                try:
+                    await self._checkpoint(
+                        "before_post",
                         **identity,
-                        noise_seed=noise_seed,
-                        instruction=instruction,
-                        observation=raw,
-                    ),
+                        trace_id=trace_id,
+                        logical_call_id=logical_call_id,
+                        attempt_index=attempt_index,
+                    )
+                finally:
+                    journal_before_post_s = time.monotonic() - checkpoint_started
+                if self._closing or time.time() >= self.deployment["expires_at"]:
+                    raise SlotFencedError("The owned deployment cannot accept another request")
+                self._sequences[slot] += 1
+                self._pending[slot] = identity
+                submitted = True
+                post_started = time.monotonic()
+                result = None
+                error_fields = {"error_type": None, "error_code": None}
+                try:
+                    result = await self._clients[slot].predict(request)
+                except (httpx.TransportError, DropbearError) as exc:
+                    error_fields = _error_fields(exc)
+                finally:
+                    self._event(
+                        "inference_post",
+                        duration_s=time.monotonic() - post_started,
+                        # This legacy field means a decoded SDK envelope was returned;
+                        # an HTTP error can still have a provider_http_response event.
+                        response_received=result is not None,
+                        **error_fields,
+                        journal_before_post_s=journal_before_post_s,
+                        **correlation,
+                    )
+                resolution_source = "predict"
+                may_resubmit = attempt_index < self.max_not_admitted_resubmissions
+                if result is None or self._check_identity(result, identity) == "pending":
+                    result, resolution_source = await self._recover(
+                        self._clients[slot], identity, require_atomic_resolution=may_resubmit
+                    )
+                elif (
+                    may_resubmit
+                    and result.get("status") == "failed"
+                    and result["error"]["code"] == "request_not_admitted"
+                ):
+                    # Even a decoded failed POST is not authority to submit again.
+                    result, resolution_source = await self._recover(
+                        self._clients[slot], identity, require_atomic_resolution=True
+                    )
+                status = self._check_identity(result, identity)
+                await terminal_checkpoint(
+                    status,
+                    resolution_source=resolution_source,
+                    error_code=result["error"]["code"] if status == "failed" else None,
                 )
-            encode_s = time.monotonic() - encoding_started
-            self._event("inference_encode", duration_s=encode_s, **correlation)
-            checkpoint_started = time.monotonic()
-            try:
-                await self._checkpoint("before_post", **identity, trace_id=trace_id)
-            finally:
-                journal_before_post_s = time.monotonic() - checkpoint_started
-            self._sequences[slot] += 1
-            self._pending[slot] = identity
-            submitted = True
-            post_started = time.monotonic()
-            result = None
-            error_fields = {"error_type": None, "error_code": None}
-            try:
-                result = await self._clients[slot].predict(request)
-            except (httpx.TransportError, DropbearError) as exc:
-                error_fields = _error_fields(exc)
-            finally:
+                del self._pending[slot]
+                if status == "failed":
+                    self._event(
+                        "inference_failed",
+                        code=result["error"]["code"],
+                        resolution_source=resolution_source,
+                        journal_before_post_s=journal_before_post_s,
+                        journal_terminal_s=journal_terminal_s,
+                        **correlation,
+                    )
+                    if (
+                        may_resubmit
+                        and result["error"]["code"] == "request_not_admitted"
+                        and resolution_source == "resolve"
+                    ):
+                        # The resolver's CAS fences a late original admission. The
+                        # next loop sends a new identity for this same logical input.
+                        self._event(
+                            "inference_resubmission",
+                            reason="request_not_admitted",
+                            resolution_source=resolution_source,
+                            **correlation,
+                        )
+                        await asyncio.sleep(0)  # Observe cancellation before any new POST.
+                        continue
+                    raise RequestFailedError(result["error"]["code"], identity)
                 self._event(
-                    "inference_post",
-                    duration_s=time.monotonic() - post_started,
-                    # This legacy field means a decoded SDK envelope was returned;
-                    # an HTTP error can still have a provider_http_response event.
-                    response_received=result is not None,
-                    **error_fields,
-                    journal_before_post_s=journal_before_post_s,
-                    **correlation,
-                )
-            if result is None or self._check_identity(result, identity) == "pending":
-                result = await self._recover(self._clients[slot], identity)
-            status = self._check_identity(result, identity)
-            await terminal_checkpoint(status)
-            del self._pending[slot]
-            if status == "failed":
-                self._event(
-                    "inference_failed",
-                    code=result["error"]["code"],
+                    "provider_inference",
+                    duration_s=time.monotonic() - started,
+                    encode_s=encode_s,
                     journal_before_post_s=journal_before_post_s,
                     journal_terminal_s=journal_terminal_s,
+                    timing=result.get("timings_ms", {}),
                     **correlation,
                 )
-                raise RequestFailedError(result["error"]["code"], identity)
-            self._event(
-                "provider_inference",
-                duration_s=time.monotonic() - started,
-                encode_s=encode_s,
-                journal_before_post_s=journal_before_post_s,
-                journal_terminal_s=journal_terminal_s,
-                timing=result.get("timings_ms", {}),
-                **correlation,
-            )
-            return np.asarray(result["actions"], dtype=np.float32)
+                return np.asarray(result["actions"], dtype=np.float32)
         except asyncio.CancelledError:
             if submitted and slot in self._pending:
                 try:
-                    result = await self._protected(
+                    result, _ = await self._protected(
                         write=self._recover(self._clients[slot], identity)
                     )
                     await terminal_checkpoint("cancelled_resolved")
