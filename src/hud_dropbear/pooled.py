@@ -113,6 +113,7 @@ class PooledProvider:
         self._pending = {}
         self.cleanup_confirmed = False
         self.cleanup_error = None
+        self._cleanup_evidence_errors = []
 
     @property
     def deployment_id(self):
@@ -137,6 +138,18 @@ class PooledProvider:
 
     def _event(self, event, **fields):
         self.emit(event, deployment_id=self.deployment_id, **fields)
+
+    def _cleanup_event(self, event, **fields):
+        try:
+            self._event(event, **fields)
+        except Exception as exc:
+            self._cleanup_evidence_errors.append((f"event:{event}", exc))
+
+    async def _cleanup_checkpoint(self, phase, **fields):
+        try:
+            await self._checkpoint(phase, **fields)
+        except Exception as exc:
+            self._cleanup_evidence_errors.append((f"journal:{phase}", exc))
 
     async def _checkpoint(self, phase, **fields):
         if self._journal is None:
@@ -173,7 +186,10 @@ class PooledProvider:
         return result
 
     async def _response_hook(self, response):
-        self._event(
+        # A timing writer failure during DELETE/GET must not prevent the SDK
+        # from processing the response and confirming owned resource teardown.
+        emit = self._cleanup_event if self._closing else self._event
+        emit(
             "provider_http_response",
             request_id=response.request.extensions.get("dropbear_request_id"),
             http_status=response.status_code,
@@ -304,7 +320,10 @@ class PooledProvider:
             try:
                 await self.close()
             except BaseException as cleanup:
-                exc.add_note(f"Pooled deployment cleanup was not confirmed: {cleanup}")
+                exc.add_note(
+                    f"Pooled cleanup error (resource cleanup confirmed={self.cleanup_confirmed}): "
+                    f"{cleanup}"
+                )
             raise
 
     def _check_identity(self, result, identity):
@@ -505,6 +524,7 @@ class PooledProvider:
     async def _cleanup(self):
         self._closing = True
         self._ready = False
+        failure = None
         try:
             async with asyncio.timeout(self.close_timeout):
                 active = list(self._active)
@@ -516,8 +536,9 @@ class PooledProvider:
                     if self.deployment is None:
                         # Creation may have succeeded before the response was lost.
                         await self._create()
-                    await self._checkpoint("stop_intent")
-                    self._event("provider_stopping")
+                    # Durability failures still fail the job, after paid teardown.
+                    await self._cleanup_checkpoint("stop_intent")
+                    self._cleanup_event("provider_stopping")
                     while True:
                         try:
                             await self._control.stop(self.deployment_id)
@@ -527,8 +548,8 @@ class PooledProvider:
                             if value.get("status") == "stopped":
                                 self.deployment = value
                                 self.cleanup_confirmed = True
-                                self._event("provider_stopped")
-                                await self._checkpoint("stopped")
+                                self._cleanup_event("provider_stopped")
+                                await self._cleanup_checkpoint("stopped")
                                 break
                         except httpx.TransportError:
                             pass
@@ -542,30 +563,60 @@ class PooledProvider:
                 else:
                     self.cleanup_confirmed = True
         except BaseException as exc:
+            failure = exc
             self.cleanup_error = type(exc).__name__
             self._fenced.update(range(self.concurrency))
-            self._event(
+            self._cleanup_event(
                 "provider_cleanup_uncertain",
                 error_type=self.cleanup_error,
                 pending_requests=list(self._pending.values()),
             )
-            await self._checkpoint(
+            await self._cleanup_checkpoint(
                 "cleanup_uncertain",
                 error_type=self.cleanup_error,
                 pending_requests=list(self._pending.values()),
             )
-            raise
         finally:
             try:
                 async with asyncio.timeout(min(10, self.close_timeout)):
-                    await asyncio.gather(
+                    closed = await asyncio.gather(
                         *(c.close() for c in [*self._clients, self._control] if c is not None),
                         return_exceptions=True,
                     )
+                    for result in closed:
+                        if isinstance(result, Exception):
+                            self._cleanup_evidence_errors.append(("client_close", result))
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    failure.add_note(f"SDK client closure also failed: {type(exc).__name__}")
             finally:
                 self._encoder.shutdown(wait=False, cancel_futures=True)
                 if self._journal is not None:
-                    self._journal.close()
+                    try:
+                        self._journal.close()
+                    except Exception as exc:
+                        self._cleanup_evidence_errors.append(("journal:close", exc))
+        if failure is not None:
+            self.cleanup_error = type(failure).__name__
+            if self._cleanup_evidence_errors:
+                failure.add_note(
+                    "Local cleanup evidence also failed at: "
+                    + ", ".join(stage for stage, _ in self._cleanup_evidence_errors)
+                )
+            raise failure
+        if self._cleanup_evidence_errors:
+            self._cleanup_event(
+                "provider_cleanup_evidence_failed",
+                stages=[stage for stage, _ in self._cleanup_evidence_errors],
+                error_types=[type(exc).__name__ for _, exc in self._cleanup_evidence_errors],
+            )
+            self.cleanup_error = "ExceptionGroup"
+            raise ExceptionGroup(
+                "Resource cleanup completed, but local cleanup evidence failed",
+                [exc for _, exc in self._cleanup_evidence_errors],
+            )
 
     async def close(self):
         if self._close_task is None:
@@ -578,4 +629,7 @@ class PooledProvider:
         except BaseException as cleanup:
             if exc is None:
                 raise
-            exc.add_note(f"Pooled deployment cleanup was not confirmed: {cleanup}")
+            exc.add_note(
+                f"Pooled cleanup error (resource cleanup confirmed={self.cleanup_confirmed}): "
+                f"{cleanup}"
+            )

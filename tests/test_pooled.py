@@ -50,6 +50,7 @@ class Server:
         self.clients = []
         self.closed = []
         self.stops = 0
+        self.stop_ids = []
         self.mode = "success"
         self.creation_lost = False
         self.block_creation = False
@@ -90,6 +91,7 @@ class Server:
         if path.startswith("/v1/inference/deployments/"):
             if request.method == "DELETE":
                 self.stops += 1
+                self.stop_ids.append(path.rsplit("/", 1)[-1])
                 code = self.stop_errors.pop(0) if self.stop_errors else self.permanent_stop_error
                 if code:
                     return httpx.Response(409, json={"error": {"code": code}})
@@ -508,6 +510,94 @@ async def test_cleanup_failure_is_visible_and_connections_close():
     assert len(server.closed) == len(server.clients)
     assert not provider.cleanup_confirmed and provider.cleanup_error == "TimeoutError"
     assert any(name == "provider_cleanup_uncertain" for name, _ in events)
+
+
+@pytest.mark.parametrize("phase", ["stop_intent", "stopped"])
+async def test_cleanup_journal_failure_does_not_prevent_owned_stop(phase, monkeypatch):
+    server = Server()
+    provider = server.provider(concurrency=1)
+    await provider.__aenter__()
+    checkpoint = provider._checkpoint
+
+    async def failing_checkpoint(current_phase, **fields):
+        if current_phase == phase:
+            raise OSError("disk full while recording cleanup")
+        await checkpoint(current_phase, **fields)
+
+    monkeypatch.setattr(provider, "_checkpoint", failing_checkpoint)
+    with pytest.raises(ExceptionGroup) as error:
+        await provider.close()
+    assert any(isinstance(exc, OSError) for exc in error.value.exceptions)
+    assert provider.cleanup_confirmed and provider.cleanup_error == "ExceptionGroup"
+    assert server.stop_ids == ["deployment-test"] and server.deployment["status"] == "stopped"
+    assert len(server.closed) == len(server.clients)
+
+
+@pytest.mark.parametrize(
+    "failed_event", ["provider_stopping", "provider_stopped", "provider_http_response"]
+)
+async def test_cleanup_event_failure_does_not_prevent_owned_stop_or_confirmation(failed_event):
+    server = Server()
+    provider = server.provider(concurrency=1)
+    await provider.__aenter__()
+
+    def failing_emit(event, **fields):
+        if event == failed_event:
+            raise OSError("timing sidecar is unavailable")
+
+    provider.emit = failing_emit
+    with pytest.raises(ExceptionGroup) as error:
+        await provider.close()
+    assert all(isinstance(exc, OSError) for exc in error.value.exceptions)
+    assert provider.cleanup_confirmed and provider.cleanup_error == "ExceptionGroup"
+    assert server.stop_ids == ["deployment-test"] and server.deployment["status"] == "stopped"
+    assert len(server.closed) == len(server.clients)
+
+
+async def test_cleanup_diagnostic_failures_preserve_original_unconfirmed_stop(monkeypatch):
+    server = Server()
+    provider = server.provider(concurrency=1)
+    await provider.__aenter__()
+    server.allow_stop = False
+
+    async def failing_checkpoint(*args, **kwargs):
+        raise OSError("journal disk full")
+
+    def failing_emit(*args, **kwargs):
+        raise RuntimeError("timing writer failed")
+
+    monkeypatch.setattr(provider, "_checkpoint", failing_checkpoint)
+    provider.emit = failing_emit
+    with pytest.raises(TimeoutError) as error:
+        await provider.close()
+    assert not provider.cleanup_confirmed and provider.cleanup_error == "TimeoutError"
+    assert server.stops > 0 and set(server.stop_ids) == {"deployment-test"}
+    assert any("cleanup evidence" in note.lower() for note in error.value.__notes__)
+    assert len(server.closed) == len(server.clients)
+
+
+async def test_cleanup_journal_close_failure_is_reported_after_owned_stop(tmp_path):
+    server = Server()
+    provider = server.provider(concurrency=1, journal_path=tmp_path / "requests.jsonl")
+    await provider.__aenter__()
+
+    class FailingClose:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def close(self):
+            self.stream.close()
+            raise OSError("final journal flush failed")
+
+    provider._journal = FailingClose(provider._journal)
+    with pytest.raises(ExceptionGroup):
+        await provider.close()
+    assert provider.cleanup_confirmed and provider.cleanup_error == "ExceptionGroup"
+    assert server.stop_ids == ["deployment-test"] and provider._journal.closed
+    assert len(server.closed) == len(server.clients)
 
 
 @pytest.mark.parametrize("operation", ["stop", "status"])
