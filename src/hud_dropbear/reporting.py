@@ -240,6 +240,37 @@ def cohort_gate(summary, *, concurrency, minimum_success_rate=0.5):
         reasons.append("Recorded episode count differs from the frozen cohort")
     if summary.get("concurrency") != concurrency:
         reasons.append("Concurrency differs from the frozen cohort")
+    fixed_task_coverage = None
+    if concurrency == 1:
+        required = {(task_id, init_state_id) for task_id in range(3) for init_state_id in range(2)}
+        observed, mismatched = set(), []
+        for run in runs:
+            args, case = run.get("args"), run.get("case_index")
+            valid_args = isinstance(args, dict) and all(
+                type(args.get(field)) is int for field in ("task_id", "init_state_id", "seed")
+            )
+            pair = (args["task_id"], args["init_state_id"]) if valid_args else None
+            if pair in required:
+                observed.add(pair)
+            if (
+                not valid_args
+                or args["seed"] != 0
+                or type(case) is not int
+                or case < 0
+                or pair != divmod(case % 6, 2)
+            ):
+                mismatched.append(case)
+        missing = required - observed
+        fixed_task_coverage = {
+            "required_task_initial_states": [list(pair) for pair in sorted(required)],
+            "observed_task_initial_states": [list(pair) for pair in sorted(observed)],
+            "missing_task_initial_states": [list(pair) for pair in sorted(missing)],
+            "mismatched_case_indices": mismatched,
+        }
+        if missing:
+            reasons.append("Single-lane campaign must cover all six fixed task/initial-state pairs")
+        if mismatched:
+            reasons.append("Single-lane task arguments differ from frozen case assignments")
     try:
         trace_ids = [str(UUID(run.get("trace_id") or "")) for run in runs]
         if len(set(trace_ids)) != len(trace_ids):
@@ -298,6 +329,7 @@ def cohort_gate(summary, *, concurrency, minimum_success_rate=0.5):
         "successes": successes,
         "success_rate": rate,
         "minimum_success_rate": minimum_success_rate,
+        "fixed_task_coverage": fixed_task_coverage,
         "integration_error_cases": errors,
         "reasons": reasons,
     }

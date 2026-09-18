@@ -6,7 +6,7 @@ from hud_dropbear.reporting import cohort_gate, concurrency_report, distribution
 def result():
     return {
         "concurrency": 1,
-        "expected_episodes": 2,
+        "expected_episodes": 6,
         "provenance": {"runtime": "hud", "max_steps": 600},
         "platform_evidence": {"verified": True},
         "provider_cleanup_confirmed": True,
@@ -17,8 +17,15 @@ def result():
             "errors": [],
         },
         "runs": [
-            {"case_index": 0, "lane_id": 0, "trace_id": "0" * 32, "episode_id": "a", "reward": 1},
-            {"case_index": 1, "lane_id": 0, "trace_id": "1" * 32, "episode_id": "b", "reward": 0},
+            {
+                "case_index": case,
+                "lane_id": 0,
+                "trace_id": f"{case:032x}",
+                "episode_id": str(case),
+                "reward": int(case % 2 == 0),
+                "args": {"task_id": task, "init_state_id": initial, "seed": 0},
+            }
+            for case, (task, initial) in enumerate([(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)])
         ],
     }
 
@@ -32,6 +39,59 @@ def test_every_attempt_is_in_denominator_and_platform_is_required():
     data = result()
     data["platform_evidence"]["verified"] = False
     assert not cohort_gate(data, concurrency=1)["passed"]
+
+
+def test_short_single_lane_smoke_run_cannot_pass_fixed_campaign_acceptance():
+    data = result()
+    data["runs"] = data["runs"][:2]
+    data["expected_episodes"] = 2
+    gate = cohort_gate(data, concurrency=1)
+    assert gate["success_rate"] == 0.5
+    assert not gate["passed"]
+    assert gate["fixed_task_coverage"]["missing_task_initial_states"] == [
+        [1, 0],
+        [1, 1],
+        [2, 0],
+        [2, 1],
+    ]
+
+
+@pytest.mark.parametrize("mutation", ["repeat", "reorder", "missing_args", "wrong_seed"])
+def test_six_episodes_require_the_actual_frozen_task_initial_state_assignments(mutation):
+    data = result()
+    if mutation == "repeat":
+        data["runs"][5]["args"] = dict(data["runs"][0]["args"])
+    elif mutation == "reorder":
+        data["runs"][0]["args"], data["runs"][1]["args"] = (
+            data["runs"][1]["args"],
+            data["runs"][0]["args"],
+        )
+    elif mutation == "missing_args":
+        del data["runs"][0]["args"]
+    else:
+        data["runs"][0]["args"]["seed"] = 1
+    gate = cohort_gate(data, concurrency=1)
+    assert not gate["passed"]
+    assert gate["fixed_task_coverage"]["mismatched_case_indices"]
+
+
+@pytest.mark.parametrize("width", [2, 3, 8, 17, 32, 64])
+def test_other_widths_retain_two_episodes_per_lane_acceptance(width):
+    data = result()
+    data.update(concurrency=width, expected_episodes=2 * width)
+    data["runs"] = [
+        {
+            "case_index": case,
+            "lane_id": case % width,
+            "trace_id": f"{case:032x}",
+            "episode_id": str(case),
+            "reward": case % 2,
+        }
+        for case in range(2 * width)
+    ]
+    data["concurrency_evidence"]["active_episodes"]["peak_distinct_lanes"] = width
+    data["concurrency_evidence"]["provider_ready_robots"] = 8 * ((width + 7) // 8)
+    assert cohort_gate(data, concurrency=width)["passed"]
 
 
 @pytest.mark.parametrize(

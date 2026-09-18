@@ -145,14 +145,18 @@ class _EpisodeAgent(RobotAgent):
 class PooledRobotAgent(Agent):
     """Ready-made, concurrency-safe facade accepted directly by ``Taskset.run``.
 
-    Configure one provider and one runtime pool per job. HUD creates and grades
+    Configure one runtime pool per job, using no more lanes than the provider's
+    slots. Sequential jobs can share one open provider. HUD creates and grades
     each episode; this facade creates a fresh model, adapter and action queue.
     The provider alone owns persistent HTTP clients, slot sequences and batching.
     """
 
     def __init__(self, *, provider, runtimes, max_steps=MAX_STEPS, emit=None):
-        if provider.concurrency != runtimes.concurrency:
-            raise ValueError("Inference concurrency must match the simulator pool")
+        for name, width in (("Provider", provider.concurrency), ("Runtime", runtimes.concurrency)):
+            if type(width) is not int or not 1 <= width <= 64:
+                raise ValueError(f"{name} concurrency must be an integer from 1 to 64")
+        if runtimes.concurrency > provider.concurrency:
+            raise ValueError("Runtime concurrency must not exceed the provider's slot count")
         if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
             raise ValueError("max_steps must be between 1 and 600")
         self.provider, self.runtimes, self.max_steps = provider, runtimes, max_steps
@@ -184,6 +188,8 @@ class PooledRobotAgent(Agent):
             run.trace.extra["dropbear"] = {
                 **self.provider.identity,
                 **fields,
+                "active_concurrency": self.runtimes.concurrency,
+                "provider_concurrency": self.provider.concurrency,
                 "observation_profile": POOLED_PROFILE,
                 "control_hz": CONTROL_HZ,
             }

@@ -76,10 +76,12 @@ H100 worker; reserved capacity is rounded up to a multiple of eight. Requesting
 three environments therefore still reserves one worker. These are independent
 closed-loop simulators, not one observation copied into multiple requests.
 
-The default is two sequential episodes per lane. Frozen cases cycle through
-`libero_spatial` task-order0, tasks0–2 and initial states0–1. Each row records task
-name, seed, lane, episode identity and request noise seed before allocation. For
-one lane, use `--episodes-per-lane 6` to cover all six selections. A new output
+The CLI defaults to six sequential episodes for one lane and two episodes per
+lane for every other width. Frozen cases cycle through `libero_spatial`
+task-order0, tasks0–2 and initial states0–1. Each row records task name, seed,
+lane, episode identity and request noise seed before allocation. An explicit
+shorter one-lane run remains a smoke test: campaign acceptance requires all six
+task/initial-state pairs at seed0 in their frozen case assignments. A new output
 directory is required for every attempt.
 
 The contract is raw agent-view and wrist-view RGB360×360, position3, normalized
@@ -161,6 +163,11 @@ Each completed row is retained immediately, so cancelling
 another row cannot discard its grade from the returned job. No HUD fork or private
 runtime override is needed.
 
+The generic Python helper `cohort_tasks()` retains its two-episode default for
+small lifecycle tests. For one-lane campaign acceptance, call
+`cohort_tasks(1, episodes_per_lane=6)` explicitly; the CLI applies this default
+automatically. The eight-lane example above keeps two episodes per lane.
+
 ## Similarities to language agents, and differences
 
 | Concern | This robotics integration |
@@ -182,13 +189,37 @@ owned deployment to report `stopped` and independently verifies termination of
 the exact HUD instances. It never adopts or stops someone else's deployment.
 
 Warm episodes within a run reuse the open provider, including its clients and
-slot sequences. A custom campaign can retain that same provider across cohorts
-of the same concurrency, within its original funded lifetime. Such cohorts must
-have distinct task and evidence identities, share the deployment's final cleanup
-receipt, and be reported as warm reuse; the retained capacity remains billable.
-The CLI currently owns one cohort per invocation and has no cross-cohort or
-capacity-resizing mode. Independent cold trials require fresh provisioned apps
-and grants, rather than retaining a warm provider between trials.
+slot sequences. A custom Python campaign can retain that same provider across
+**sequential** cohorts within its original funded lifetime. Create a fresh
+`RuntimePool` and `PooledRobotAgent` for each job, with an integer runtime
+concurrency from 1 through `provider.concurrency`. Runtime lanes use the first
+N provider slots; smaller cohorts neither reset sequences nor remap fenced
+slots. Each episode still receives a fresh adapter and action queue. Do not run
+overlapping runtime pools against the same slots.
+
+Active cohort width, exposed provider slots and funded capacity are distinct:
+
+| Provider configuration | Sequential active cohort widths | Retained funded capacity |
+|---|---|---|
+| `PooledProvider(concurrency=8)` | 8, then 3, then 1 | 8 robot slots on one H100 throughout |
+| `PooledProvider(concurrency=64)` | 64, then 63 | 64 robot slots on eight H100s throughout |
+| `PooledProvider(concurrency=3)` | 1–3 only | 8 robot slots on one H100; only three slots exposed |
+
+These are supported composition patterns, not live GPU qualification results.
+The unused capacity remains allocated and billable; this is warm reuse, not
+capacity resizing or an inference cold start. Trace metadata records active and
+provider concurrency alongside the deployment's reserved capacity. Give each
+cohort a separate HUD job, frozen task manifest, timing sidecar and grades; apply
+the success gate to each cohort independently. All cohorts reference the same
+provider creation and final cleanup receipt. Close each simulator pool before
+the next cohort, keep the provider's outer context open until all cohorts finish,
+and close it reliably on completion, failure or cancellation. Shared reuse does
+not extend the original deployment/grant lifetime or budget reservation.
+
+The CLI still owns one cohort per invocation and has no cross-cohort mode.
+Independent cold trials require fresh provisioned apps and grants: three
+8-wide cold trials need three fresh apps, even though warm 8/3/1 cohorts can
+share one allocation.
 
 ## Evidence and timing
 

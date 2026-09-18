@@ -74,6 +74,33 @@ def test_cohort_requires_warm_repeats():
         cohort_tasks(8, episodes_per_lane=1)
 
 
+@pytest.mark.parametrize("width", [1, 2, 3, 8, 17, 32, 64])
+def test_cli_episode_default_covers_six_cases_for_one_lane_only(width):
+    args = parser().parse_args(["--concurrency", str(width)])
+    assert args.episodes_per_lane == (6 if width == 1 else 2)
+    if width == 1:
+        rows = cohort_tasks(width, episodes_per_lane=args.episodes_per_lane)
+        assert {(row.args["task_id"], row.args["init_state_id"]) for row in rows} == {
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (1, 1),
+            (2, 0),
+            (2, 1),
+        }
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--concurrency", "1", "--episodes-per-lane", "2"],
+        ["--episodes-per-lane", "2", "--concurrency", "1"],
+    ],
+)
+def test_cli_preserves_explicit_single_lane_smoke_episode_count(arguments):
+    assert parser().parse_args(arguments).episodes_per_lane == 2
+
+
 async def test_each_free_lane_advances_without_waiting_behind_another_lane(monkeypatch):
     import hud_dropbear.pooled_cli as cli
 
@@ -171,8 +198,9 @@ async def test_stuck_scheduler_cleanup_is_bounded_without_a_second_cancellation(
         await asyncio.wait_for(finished.wait(), 1)
 
 
+@pytest.mark.parametrize("width,expected", [(1, 6), (8, 16)])
 async def test_runner_saves_every_planned_failure_after_provider_startup_error(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, width, expected
 ):
     import hud_dropbear.pooled_cli as cli
 
@@ -189,12 +217,14 @@ async def test_runner_saves_every_planned_failure_after_provider_startup_error(
             pass
 
     monkeypatch.setattr(cli, "PooledProvider", FailingProvider)
-    args = parser().parse_args(["--runtime", "local-container", "--output", str(tmp_path)])
+    args = parser().parse_args(
+        ["--runtime", "local-container", "--output", str(tmp_path), "--concurrency", str(width)]
+    )
     with pytest.raises(TimeoutError, match="test provider startup"):
         await cli.evaluate(args)
     result = json.loads((tmp_path / "results.json").read_text())
-    assert result["expected_episodes"] == len(result["runs"]) == 16
-    assert result["integration_errors"] == 16 and not result["demo_passed"]
+    assert result["expected_episodes"] == len(result["runs"]) == expected
+    assert result["integration_errors"] == expected and not result["demo_passed"]
     assert result["provider_cleanup_confirmed"]
     assert (tmp_path / "cohort.json").exists() and (tmp_path / "report.json").exists()
 

@@ -376,11 +376,23 @@ async def evaluate(args):
     return 0 if summary["demo_passed"] else 1
 
 
+class _CohortParser(argparse.ArgumentParser):
+    def parse_args(self, args=None, namespace=None):
+        parsed = super().parse_args(args, namespace)
+        if parsed.episodes_per_lane is None:
+            parsed.episodes_per_lane = 6 if parsed.concurrency == 1 else 2
+        return parsed
+
+
 def parser():
-    p = argparse.ArgumentParser(description="Run a fixed parallel MolmoAct2-LIBERO cohort")
+    p = _CohortParser(description="Run a fixed parallel MolmoAct2-LIBERO cohort")
     p.add_argument("--runtime", choices=("hud", "local-container"), default="hud")
     p.add_argument("--concurrency", type=int, choices=range(1, 65), default=8, metavar="1..64")
-    p.add_argument("--episodes-per-lane", type=int, default=2)
+    p.add_argument(
+        "--episodes-per-lane",
+        type=int,
+        help="Default: 6 for one lane, 2 otherwise; short one-lane runs are smoke tests",
+    )
     p.add_argument("--image", default="hud-dropbear-libero-pooled:local")
     p.add_argument("--registry-id", help="Dedicated idle HUD environment registry ID")
     p.add_argument("--build-id", help="Expected immutable HUD environment build ID")
