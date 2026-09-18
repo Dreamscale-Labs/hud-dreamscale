@@ -208,7 +208,10 @@ Active cohort width, exposed provider slots and funded capacity are distinct:
 These are supported composition patterns, not live GPU qualification results.
 The unused capacity remains allocated and billable; this is warm reuse, not
 capacity resizing or an inference cold start. Trace metadata records active and
-provider concurrency alongside the deployment's reserved capacity. Give each
+provider concurrency alongside the deployment's reserved capacity. At each cohort
+boundary, `provider_reused_capacity` can record a fresh authenticated deployment
+status check; reporting uses its capacity without adding an inference cold-start
+latency sample. Give each
 cohort a separate HUD job, frozen task manifest, timing sidecar and grades; apply
 the success gate to each cohort independently. All cohorts reference the same
 provider creation and final cleanup receipt. Close each simulator pool before

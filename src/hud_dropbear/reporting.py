@@ -157,7 +157,7 @@ def concurrency_report(events):
     ready_capacity = 0
     for row in events:
         event, episode = row["event"], row.get("episode_id")
-        if event == "provider_ready":
+        if event in {"provider_ready", "provider_reused_capacity"}:
             capacity = row.get("ready_robots", 0)
             if type(capacity) is int and capacity >= 0:
                 ready_capacity = max(ready_capacity, capacity)
