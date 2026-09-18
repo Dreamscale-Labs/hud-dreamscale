@@ -190,15 +190,33 @@ async def predict(provider, slot=0, episode="first"):
 
 
 @pytest.mark.parametrize(
-    "concurrency,capacity", [(1, 8), (3, 8), (8, 8), (9, 16), (32, 32), (64, 64)]
+    "concurrency,capacity",
+    [
+        (width, capacity)
+        for capacity in range(8, 65, 8)
+        for width in range(capacity - 7, capacity + 1)
+    ],
 )
 async def test_capacity_rounds_to_full_replicas_and_cleanup_confirms_stop(concurrency, capacity):
+    """All supported widths over the mock HTTP boundary, not live GPU capacity."""
     server = Server()
     async with server.provider(concurrency=concurrency) as provider:
         assert provider.capacity == capacity
         assert provider.identity["max_robots"] == capacity
+        assert provider.identity["warm_robots"] == capacity
+        assert len(server.creates) == 1
         assert len(server.clients) == concurrency + 1
-        assert provider.is_slot_available(concurrency - 1)
+        assert all(provider.is_slot_available(slot) for slot in range(concurrency))
+        assert not provider.is_slot_available(concurrency)
+        # The highest requested slot must work even at a partial replica width.
+        # Rounded capacity must not expose additional robot slots to the caller.
+        actions = await predict(provider, concurrency - 1)
+        assert actions.shape == (10, 7) and np.all(actions == concurrency)
+        assert server.posts[0]["robot_slot"] == concurrency - 1
+        assert server.posts[0]["sequence"] == 0
+        with pytest.raises(SlotFencedError):
+            await predict(provider, concurrency)
+        assert len(server.posts) == 1
     assert server.stops == 1 and server.deployment["status"] == "stopped"
     assert provider.cleanup_confirmed and provider.cleanup_error is None
     assert len(server.closed) == len(server.clients)
