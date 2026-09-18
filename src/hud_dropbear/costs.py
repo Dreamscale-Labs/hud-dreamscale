@@ -139,7 +139,14 @@ def _state(rows):
     for row in rows[1:]:
         event = row["event"]
         if event == "reserve":
-            state["stages"][row["stage"]] = {**row, "released": False, "resources": []}
+            state["stages"][row["stage"]] = {
+                **row,
+                "holds_usd": dict(row["holds_usd"]),
+                "lag_usd": dict(row["lag_usd"]),
+                "released": False,
+                "resources": [],
+                "refined_providers": [],
+            }
         elif event == "resource":
             state["resources"][row["resource"]] = {
                 **row,
@@ -155,6 +162,11 @@ def _state(rows):
             state["resources"][row["resource"]]["terminated_at"] = row["terminated_at"]
         elif event == "reconcile":
             state["stages"][row["stage"]]["released"] = True
+        elif event == "refine_hold":
+            stage = state["stages"][row["stage"]]
+            stage["holds_usd"][row["provider"]] = row["hold_usd"]
+            stage["lag_usd"][row["provider"]] = row["lag_usd"]
+            stage["refined_providers"].append(row["provider"])
     return state
 
 
@@ -302,8 +314,8 @@ class CampaignBudget:
             if key not in state["resources"] or stage not in state["stages"]:
                 raise ValueError("Register resource and reserve stage before binding")
             row = state["stages"][stage]
-            if row["released"] or key in row["resources"]:
-                raise ValueError("Stage is reconciled or resource already bound")
+            if row["released"] or row["refined_providers"] or key in row["resources"]:
+                raise ValueError("Stage is reconciled, refined, or resource already bound")
             if state["resources"][key]["terminated_at"] is not None:
                 raise ValueError("Cannot bind a resource already confirmed terminated")
 
@@ -361,6 +373,92 @@ class CampaignBudget:
             },
             validate,
         )
+
+    def refine_stage_hold(self, stage, provider, *, hold_usd, evidence_path, evidence_sha256):
+        """Reduce reviewed planning slack after exact resource termination.
+
+        This preserves the original full-lifetime estimate and a nonnegative lag
+        allowance. It never releases a stage, settles a bill, or erases posted
+        spend. Each provider can be refined once; no later resources can bind.
+
+        The caller must review the content-addressed evidence and its complete
+        resource inventory. JSON assertions and file hashes provide provenance,
+        not provider authentication or proof that a billing estimate is a cap.
+        """
+        if provider not in PROVIDERS:
+            raise ValueError("A known provider is required")
+        hold = amount(hold_usd)
+        proof_path = Path(evidence_path).resolve()
+        raw = proof_path.read_bytes()
+        if len(raw) > 1_048_576 or hashlib.sha256(raw).hexdigest() != evidence_sha256:
+            raise ValueError("Refinement evidence digest or size differs")
+        proof = json.loads(raw)
+        if not isinstance(proof, dict):
+            raise ValueError("Refinement evidence must be an object")
+        resource_ids = proof.get("resource_ids")
+        references = proof.get("evidence")
+        if (
+            type(proof.get("schema_version")) is not int
+            or proof.get("schema_version") != 1
+            or proof.get("stage") != stage
+            or proof.get("provider") != provider
+            or proof.get("resource_inventory_complete") is not True
+            or proof.get("unknown_resource_creation") is not False
+            or proof.get("additional_billable_resources") != []
+            or not isinstance(proof.get("basis"), str)
+            or not proof["basis"].strip()
+            or not isinstance(resource_ids, list)
+            or not resource_ids
+            or any(not isinstance(identity, str) or not identity for identity in resource_ids)
+            or len(set(resource_ids)) != len(resource_ids)
+            or not isinstance(references, list)
+            or not references
+        ):
+            raise ValueError("Reviewed refinement scope or complete resource proof is missing")
+        for reference in references:
+            if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+                raise ValueError("Referenced refinement evidence is malformed")
+            path = Path(reference["path"])
+            if (
+                not path.is_absolute()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != reference["sha256"]
+            ):
+                raise ValueError("Referenced refinement evidence differs")
+        event = {
+            "event": "refine_hold",
+            "stage": stage,
+            "provider": provider,
+            "hold_usd": str(hold),
+            "resource_ids": sorted(resource_ids),
+            "evidence_ref": str(proof_path),
+            "evidence_sha256": evidence_sha256,
+            "proof": proof,
+        }
+
+        def validate(state):
+            row = state["stages"].get(stage)
+            if row is None or row["released"] or provider in row["refined_providers"]:
+                raise ValueError(
+                    "Stage is missing, reconciled, or already refined for this provider"
+                )
+            resources = [state["resources"][key] for key in row["resources"]]
+            actual = {
+                resource["resource"].split(":", 1)[1]
+                for resource in resources if resource["provider"] == provider
+            }
+            if actual != set(resource_ids) or any(
+                resource["terminated_at"] is None for resource in resources
+            ):
+                raise ValueError("Exact bound resources and their termination must match the proof")
+            floor = sum(map(amount, row["estimate"]["estimated_usd"][provider].values()))
+            previous = amount(row["holds_usd"][provider])
+            if not floor <= hold < previous:
+                raise ValueError(
+                    "Refinement must preserve the full estimate and reduce only planning slack"
+                )
+            event.update(previous_hold_usd=str(previous), lag_usd=str(hold - floor))
+
+        self._append(event, validate)
 
     def reconcile_stage(self, stage, *, evidence_ref):
         """Release holds only after every funded provider and bound resource settles.

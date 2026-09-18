@@ -26,7 +26,16 @@ from .startup_cleanup import ExclusiveRegistryCampaign
 from .telemetry import Evidence
 from .video import export_videos
 
-HUD_REVISION = "0b63b4d3b9acb6d095e0886e18b2c905219e1e5a"
+# The environment/build baseline is separate from the installed client revision.
+HUD_BASE_REVISION = "0b63b4d3b9acb6d095e0886e18b2c905219e1e5a"
+_HUD_INSTALLED_PROVENANCE = package_provenance("hud")
+HUD_REVISION = _HUD_INSTALLED_PROVENANCE.get("source_commit")
+# A mutable local checkout cannot identify installed bytes without an exact match.
+if "source_dirty" in _HUD_INSTALLED_PROVENANCE and (
+    _HUD_INSTALLED_PROVENANCE["source_dirty"]
+    or _HUD_INSTALLED_PROVENANCE.get("installed_files_match_source") is not True
+):
+    HUD_REVISION = None
 COHORT_VERSION = "libero-pooled-v1"
 
 
@@ -250,6 +259,7 @@ async def evaluate(args):
         episodes_per_lane=args.episodes_per_lane,
         cohort_sha256=digest,
         hud_revision=HUD_REVISION,
+        hud_base_revision=HUD_BASE_REVISION,
         source=source_revision(),
         control_hz=CONTROL_HZ,
         profile=POOLED_PROFILE,
@@ -305,6 +315,7 @@ async def evaluate(args):
                     "reason": runtimes.cleanup_error or "local_runtime_closed",
                 },
                 "hud_revision": HUD_REVISION,
+                "hud_base_revision": HUD_BASE_REVISION,
                 "max_steps": args.max_steps,
                 "control_hz": CONTROL_HZ,
                 "profile": POOLED_PROFILE,

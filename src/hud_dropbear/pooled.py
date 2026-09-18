@@ -29,6 +29,34 @@ CREATION_REJECTIONS = {
 MODEL = "molmoact2-libero"
 
 
+def _http_operation(request):
+    """Bounded route classification; never retain signed origins, paths or query strings."""
+    method, path = request.method, request.url.path
+    if method == "POST" and path == "/v1/actions":
+        return "actions"
+    if method == "GET" and re.fullmatch(r"/v1/actions/[^/]+", path):
+        return "result_lookup"
+    if method == "POST" and re.fullmatch(r"/v1/actions/[^/]+/resolve", path):
+        return "resolve"
+    return "management"
+
+
+def _error_fields(exc):
+    """Retain diagnostic categories only, excluding exception text and response content."""
+    name = type(exc).__name__
+    code = exc.info.code if isinstance(exc, DropbearError) else None
+    return {
+        "error_type": name if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", name) else "Exception",
+        "error_code": (
+            code
+            if isinstance(code, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code)
+            else "unrecognized"
+            if code is not None
+            else None
+        ),
+    }
+
+
 class SlotFencedError(RuntimeError):
     """An uncertain or invalid result prevents further use of the affected slot."""
 
@@ -192,6 +220,12 @@ class PooledProvider:
         emit(
             "provider_http_response",
             request_id=response.request.extensions.get("dropbear_request_id"),
+            operation=_http_operation(response.request),
+            http_method=(
+                response.request.method
+                if response.request.method in {"GET", "POST", "PATCH", "DELETE"}
+                else "other"
+            ),
             http_status=response.status_code,
             server_timing=response.headers.get("server-timing"),
         )
@@ -363,6 +397,24 @@ class PooledProvider:
             raise ValueError("Actions are outside the finite float32 simulator range")
         return "completed"
 
+    async def _recovery_call(self, client, identity, *, operation):
+        started = time.monotonic()
+        try:
+            if operation == "result_lookup":
+                return await client.get_result(
+                    **{k: v for k, v in identity.items() if k != "episode_id"}
+                )
+            return await client.resolve_request(**identity)
+        except (httpx.TransportError, DropbearError) as exc:
+            self._event(
+                "provider_http_error",
+                operation=operation,
+                duration_s=time.monotonic() - started,
+                **_error_fields(exc),
+                **{k: v for k, v in identity.items() if k != "deployment_id"},
+            )
+            raise
+
     async def _recover(self, client, identity):
         """GET first, then atomically resolve unknown work. Never replay the inference POST."""
         self._event(
@@ -372,14 +424,14 @@ class PooledProvider:
             while True:
                 try:
                     try:
-                        result = await client.get_result(
-                            **{k: v for k, v in identity.items() if k != "episode_id"}
+                        result = await self._recovery_call(
+                            client, identity, operation="result_lookup"
                         )
                     except (httpx.TransportError, DropbearError):
                         result = None
                     if result is not None and self._check_identity(result, identity) != "pending":
                         return result
-                    result = await client.resolve_request(**identity)
+                    result = await self._recovery_call(client, identity, operation="resolve")
                     if self._check_identity(result, identity) != "pending":
                         return result
                 except (httpx.TransportError, DropbearError):
@@ -451,15 +503,19 @@ class PooledProvider:
             submitted = True
             post_started = time.monotonic()
             result = None
+            error_fields = {"error_type": None, "error_code": None}
             try:
                 result = await self._clients[slot].predict(request)
-            except (httpx.TransportError, DropbearError):
-                pass
+            except (httpx.TransportError, DropbearError) as exc:
+                error_fields = _error_fields(exc)
             finally:
                 self._event(
                     "inference_post",
                     duration_s=time.monotonic() - post_started,
+                    # This legacy field means a decoded SDK envelope was returned;
+                    # an HTTP error can still have a provider_http_response event.
                     response_received=result is not None,
+                    **error_fields,
                     journal_before_post_s=journal_before_post_s,
                     **correlation,
                 )

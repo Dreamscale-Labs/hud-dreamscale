@@ -1,14 +1,19 @@
 """Eight independent HUD environments sharing Dropbear HTTP inference.
 
 Configure HUD_API_KEY and the Dropbear SDK credentials, then run this file with
---registry-id selecting a dedicated, otherwise idle HUD environment registry.
+--registry-id selecting a dedicated, otherwise idle HUD environment registry,
+--build-id, --expected-release-id and --expected-release-sha256.
 For the current development qualification service, an operator must first
 provision a funded GPU app and matching account grant. This example owns one
 cohort and stops that app on exit. A subsequent run needs operator reprovisioning;
 credentials or a new creation key do not recreate the stopped app. Episodes
 within this run reuse its open provider and remain billable until cleanup.
+The operator separately owns funding and cleanup of the CPU gateway/sweeper app;
+stopping this example's inference deployment does not stop that app.
 For a saved cohort manifest, timing report and videos, use:
     hud-dropbear pooled --runtime hud --concurrency 8 --registry-id YOUR_REGISTRY_ID
+        --build-id YOUR_BUILD_ID --expected-release-id YOUR_RELEASE_ID
+        --expected-release-sha256 YOUR_RELEASE_MANIFEST_SHA256
 """
 
 import argparse
@@ -24,7 +29,9 @@ from hud_dropbear.pooled_cli import cohort_tasks, run_cohort
 from hud_dropbear.startup_cleanup import ExclusiveRegistryCampaign
 
 
-async def main(registry_id, *, api_base=None):
+async def main(
+    registry_id, *, build_id, expected_release_id, expected_release_sha256, api_base=None
+):
     rows = cohort_tasks(8)  # Two distinct episodes on each reusable scalar runtime.
     async with (
         ExclusiveRegistryCampaign(
@@ -32,11 +39,14 @@ async def main(registry_id, *, api_base=None):
             registry_id,
             environment_name=rows[0].env,
             expected_instances=8,
+            build_id=build_id,
         ) as registry,
         PooledProvider(
             concurrency=8,
             api_key=os.environ.get("DROPBEAR_API_KEY") or None,
             api_base=api_base,
+            expected_release_id=expected_release_id,
+            expected_release_sha256=expected_release_sha256,
         ) as provider,
         RuntimePool(HUDRuntime(), rows, concurrency=8) as runtimes,
     ):
@@ -51,18 +61,29 @@ async def main(registry_id, *, api_base=None):
             concurrency=8,
             rollout_timeout=900,
         )
-        # HUD's job.reward excludes some infrastructure failures. Keep the fixed
-        # denominator for this demo and inspect every run, including failures.
-        successes = sum(
-            run.reward == 1 and not run.trace.is_error and not run.grade.is_error
-            for run in job.runs
-        )
-        print(f"{successes}/{len(rows)} successful episodes; HUD job {job.id}")
+    # HUD's job.reward excludes some infrastructure failures. Keep the fixed
+    # denominator for this demo and inspect every run, including failures.
+    successes = sum(
+        run.reward == 1 and not run.trace.is_error and not run.grade.is_error for run in job.runs
+    )
+    print(f"{successes}/{len(rows)} successful episodes; HUD job {job.id}")
+    # An acceptance claim additionally requires platform/video verification.
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--registry-id", required=True)
+    parser.add_argument("--build-id", required=True, help="Expected immutable HUD build ID")
+    parser.add_argument("--expected-release-id", required=True)
+    parser.add_argument("--expected-release-sha256", required=True)
     parser.add_argument("--api-base", help="Dropbear management origin; defaults to saved config")
     args = parser.parse_args()
-    asyncio.run(main(args.registry_id, api_base=args.api_base))
+    asyncio.run(
+        main(
+            args.registry_id,
+            build_id=args.build_id,
+            expected_release_id=args.expected_release_id,
+            expected_release_sha256=args.expected_release_sha256,
+            api_base=args.api_base,
+        )
+    )

@@ -1,0 +1,138 @@
+diff --git a/hud/telemetry/robot/video.py b/hud/telemetry/robot/video.py
+index 0435878eecf1d0a2ddb071dc6919c960483501ab..44abf64b3cc57797b31fb0073e8715da60c793ba 100644
+--- a/hud/telemetry/robot/video.py
++++ b/hud/telemetry/robot/video.py
+@@ -36,6 +36,9 @@ class SegmentEncoder:
+     """Encode one camera's frames to CMAF: init segment, then one media fragment per
+     ~``segment_seconds`` via ``on_segment`` (called on the encoder thread).
+ 
++    ``thread_count`` bounds libx264 threads per camera; the default is one because
++    each camera already has its own encoder thread.
++
+     Doubles as the file-like sink PyAV muxes into: ``write`` accumulates bytes and
+     dispatches each complete top-level MP4 box as soon as it is whole.
+     """
+@@ -49,7 +52,11 @@ class SegmentEncoder:
+         segment_seconds: float = 2.0,  # how many secs of video per segment
+         crf: int = 23,  # x264 quality: 0=best, 51=worst
+         max_queued_frames: int = 16,
++        thread_count: int = 1,  # codecs otherwise multiply host CPUs by every camera
+     ) -> None:
++        if type(thread_count) is not int or thread_count < 1:
++            raise ValueError("thread_count must be a positive integer")
++        self._thread_count = thread_count
+         self.camera = camera
+         self.fps = max(1, int(fps))
+         self._on_segment = on_segment
+@@ -157,6 +164,7 @@ class SegmentEncoder:
+                     stream = container.add_stream("libx264", rate=self.fps)
+                     stream.width, stream.height = w, h
+                     stream.pix_fmt = "yuv420p"
++                    stream.codec_context.thread_count = self._thread_count
+                     stream.codec_context.time_base = Fraction(1, self.fps)
+                     # Fixed GOP (scenecut off) → each fragment is a closed, seekable GOP;
+                     # pinned Main/3.0 so the viewer's MSE codec string is fixed (avc1.4d401e).
+diff --git a/hud/telemetry/tests/test_robot_video.py b/hud/telemetry/tests/test_robot_video.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a1ce5797d398206738ac49ce1f7450823ba48ba7
+--- /dev/null
++++ b/hud/telemetry/tests/test_robot_video.py
+@@ -0,0 +1,98 @@
++"""Focused tests for the proposed upstream camera-thread limit."""
++
++import base64
++import io
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++
++from hud.agents.types import VideoSegmentStep
++from hud.telemetry.robot import video
++
++av = pytest.importorskip("av")
++
++
++@pytest.mark.parametrize("thread_count", [0, -1, True, 1.5, "1", None])
++def test_invalid_thread_limit_rejected_before_start(thread_count):
++    with pytest.raises(ValueError, match="positive integer"):
++        video.SegmentEncoder("test", lambda *_: None, fps=20, thread_count=thread_count)
++
++
++@pytest.mark.parametrize("thread_count", [None, 1, 2])
++def test_limit_reaches_real_codec_and_video_stays_decodable(monkeypatch, thread_count):
++    streams, segments = [], []
++
++    class Output:
++        def __init__(self, *args, **kwargs):
++            self.value = av.open(*args, **kwargs)
++
++        def add_stream(self, *args, **kwargs):
++            stream = self.value.add_stream(*args, **kwargs)
++            streams.append(stream)
++            return stream
++
++        def __getattr__(self, name):
++            return getattr(self.value, name)
++
++    monkeypatch.setattr(
++        video,
++        "importlib",
++        SimpleNamespace(
++            import_module=lambda name: SimpleNamespace(open=Output, VideoFrame=av.VideoFrame)
++        ),
++    )
++    kwargs = {} if thread_count is None else {"thread_count": thread_count}
++    encoder = video.SegmentEncoder(
++        "agentview_image", lambda index, data: segments.append((index, data)), fps=20, **kwargs
++    )
++    frame = np.zeros((360, 360, 3), dtype=np.uint8)
++    frame[:, :180, 0] = 200
++    frame[:, 180:, 2] = 200
++    try:
++        encoder.submit(frame)
++        encoder.submit(frame)
++    finally:
++        encoder.finalize()
++    assert not encoder._thread.is_alive()
++    assert streams[0].codec_context.thread_count == (thread_count or 1)
++    assert [index for index, _ in segments] == list(range(len(segments)))
++    with av.open(io.BytesIO(b"".join(data for _, data in segments))) as container:
++        container.streams.video[0].codec_context.thread_count = 1
++        frames = list(container.decode(video=0))
++        assert len(frames) == 2
++        assert all((frame.width, frame.height) == (360, 360) for frame in frames)
++        assert frames[0].pts < frames[1].pts
++        assert container.streams.video[0].codec_context.name == "h264"
++        assert container.streams.video[0].average_rate == 20
++
++
++def test_default_streamer_preserves_both_camera_video_segments(monkeypatch):
++    emitted = []
++    monkeypatch.setattr(
++        VideoSegmentStep, "emit", lambda self, **kwargs: emitted.append((self, kwargs))
++    )
++    trace_id = "79c4893f907d4974aab879824e038c36"
++    streamer = video.VideoStreamer(fps=20, trace_id=trace_id)
++    cameras = ("agentview_image", "robot0_eye_in_hand_image")
++    data = {name: np.zeros((360, 360, 3), dtype=np.uint8) for name in cameras}
++    data["state"] = np.zeros(8)
++    try:
++        streamer.record({"data": data})
++        streamer.record({"data": data})
++    finally:
++        streamer.finalize()
++    assert {step.camera for step, _ in emitted} == set(cameras)
++    assert all(kwargs == {"trace_id": trace_id} for _, kwargs in emitted)
++    assert all(step.fps == 20 for step, _ in emitted)
++    for camera in cameras:
++        segments = sorted(
++            (step for step, _ in emitted if step.camera == camera), key=lambda s: s.index
++        )
++        assert [step.index for step in segments] == list(range(len(segments)))
++        payload = b"".join(base64.b64decode(step.segment["data"]) for step in segments)
++        with av.open(io.BytesIO(payload)) as container:
++            container.streams.video[0].codec_context.thread_count = 1
++            frames = list(container.decode(video=0))
++            assert len(frames) == 2
++            assert all((frame.width, frame.height) == (360, 360) for frame in frames)

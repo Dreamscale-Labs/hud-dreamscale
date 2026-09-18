@@ -1,0 +1,12 @@
+{
+  "base_revision": "0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
+  "expected_patched_tree": "470d256209385e6e4fac8e2b3b5ad086681625b2",
+  "files": {
+    "hud/telemetry/robot/video.py": "abad4946b2d38bb90c1010ae6f988facebfc59937c4e28b08c050721e2544c44",
+    "hud/telemetry/tests/test_robot_video.py": "73b084aab01406f1b16298ca3f4b4a44b69c591bf0f1e3037f87ac8a88a72a24"
+  },
+  "internal_qualification_revision": "b6afb3f29026a31df6d6f26faf20403cd95fa530",
+  "note": "The internal qualification commit is not an upstream release. Recreated commits may have different IDs; compare tree and file hashes and record the actual local commit.",
+  "patch_sha256": "0e01be301f8e8a5b8ae14254ce2d9e8e22bff0cbb90a135066f088c7f4370ce4",
+  "repository": "https://github.com/hud-evals/hud-python"
+}

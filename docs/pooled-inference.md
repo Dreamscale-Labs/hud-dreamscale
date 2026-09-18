@@ -5,10 +5,14 @@ pooled inference API. Configure a ready-made agent; HUD still executes actions,
 grades tasks and records traces. Dropbear owns native model preprocessing, GPU
 batching and inference. The client needs no GPU or model weights.
 
-**Qualification status:** local contract and real HUD protocol tests pass. The new
-pooled adapter's live HUD cohorts, success rates, startup distributions and costs
-are pending. The older six-episode demo uses the exclusive-session API and does
-not qualify this serving path. Do not present mock tests as GPU capacity evidence.
+**Qualification status (18 September 2026):** two eight-lane HUD-hosted
+cohorts each passed all 16 episodes, and a three-lane cohort passed all six,
+with zero episode integration errors, verified grades and both camera videos.
+A single-lane attempt achieved five successes and one transport/admission error;
+it failed acceptance and remains recorded. Larger live cohorts are still being
+qualified; do not generalize these results to every width. The older
+six-episode demo uses the separate exclusive-session API. Local contract tests
+are not GPU capacity evidence.
 
 ## Installation during development
 
@@ -35,6 +39,16 @@ versions. NumPy 2.2.6 remains an explicit repository-local override of OpenPI's
 NumPy<2 constraint; wire round trips are tested under that combination. Simulator
 dependencies remain isolated in the locked CPU environment.
 
+Wide camera recording additionally requires the explicit
+[HUD encoder thread-limit patch](../patches/README.md). The original SDK exhausted
+native threads in a 64-lane fixture. The bounded patch passed the real HUD wire
+and ordinary recording lifecycle for 128 synthetic episodes: all 256 camera
+streams and 768 frames decoded correctly, with no encoder warnings or remaining
+camera threads. This is a recording test, not a live GPU or policy-quality result.
+The patch changes only agent-side recording; the hosted simulator uses the
+original HUD build. Follow the included immutable base, tree/hash checks and
+installation steps when reproducing the wide run.
+
 ## Run a cohort
 
 First deploy the separate raw360 environment using the
@@ -53,6 +67,10 @@ granted GPU app. Before another CLI run, the operator must provision a fresh app
 and configure its matching grant. A new creation key or unused time on the old
 grant does not recreate the stopped app. This is a current Dropbear provisioning
 limitation, not a HUD requirement or the intended self-service product workflow.
+The operator also owns the separately billable CPU gateway/sweeper app. Stopping
+the inference deployment does not stop that app: a campaign-owned gateway needs
+explicit operator teardown, while a shared gateway needs its own funded lifetime
+and cleanup owner. Do not stop a shared gateway belonging to another run.
 
 ```bash
 .venv/bin/hud-dropbear pooled \
@@ -98,8 +116,12 @@ same agent and action contract but cannot pass the HUD-hosted acceptance gate.
 
 The CLI is the recommended reproducible evaluation entry point because it saves
 the manifest, timings, every grade, video and platform verification. This smaller
-example shows the public composition and is also provided in
-[`examples/pooled_libero.py`](../examples/pooled_libero.py):
+example shows the public composition. Set `HUD_ENVIRONMENT_ID` to the dedicated
+registry UUID, `HUD_BUILD_ID` to its expected immutable build UUID, and
+`DROPBEAR_RELEASE_ID` / `DROPBEAR_RELEASE_SHA256` to the operator's qualified
+release. [`examples/pooled_libero.py`](../examples/pooled_libero.py) provides the
+same composition with required `--registry-id`, `--build-id`,
+`--expected-release-id` and `--expected-release-sha256` arguments.
 
 ```python
 import asyncio
@@ -117,7 +139,6 @@ from hud_dropbear.startup_cleanup import ExclusiveRegistryCampaign
 async def main():
     concurrency = 8
     tasks = cohort_tasks(concurrency, episodes_per_lane=2)
-    job = await Job.start("dropbear-libero-parallel")
 
     async with (
         ExclusiveRegistryCampaign(
@@ -125,6 +146,7 @@ async def main():
             os.environ["HUD_ENVIRONMENT_ID"],
             expected_instances=concurrency,
             environment_name=tasks[0].env,
+            build_id=os.environ["HUD_BUILD_ID"],
         ) as registry,
         PooledProvider(
             concurrency=concurrency,
@@ -138,6 +160,7 @@ async def main():
     ):
         await registry.validate_ready()
         agent = PooledRobotAgent(provider=provider, runtimes=runtimes)
+        job = await Job.start("dropbear-libero-parallel")
         await run_cohort(
             agent,
             tasks,
@@ -160,8 +183,9 @@ asyncio.run(main())
 `run_cohort` uses HUD's public `Taskset.run` under one shared job, with one
 sequential worker per lane. Free lanes immediately start their next episode.
 Each completed row is retained immediately, so cancelling
-another row cannot discard its grade from the returned job. No HUD fork or private
-runtime override is needed.
+another row cannot discard its grade from the returned job. Task execution uses
+HUD's public extension interfaces; the separate recording patch above is required
+for the wide camera fixture.
 
 The generic Python helper `cohort_tasks()` retains its two-episode default for
 small lifecycle tests. For one-lane campaign acceptance, call
@@ -169,6 +193,9 @@ small lifecycle tests. For one-lane campaign acceptance, call
 automatically. The eight-lane example above keeps two episodes per lane.
 
 ## Similarities to language agents, and differences
+
+This follows the ready-made provider-agent pattern discussed as “LLMAgent-style.”
+In the pinned HUD SDK, the language-agent base is named `ToolAgent`.
 
 | Concern | This robotics integration |
 |---|---|
@@ -182,6 +209,12 @@ automatically. The eight-lane example above keeps two episodes per lane.
 | Episode state | Fresh adapter and action queue per episode; transport clients persist |
 | Batching | Dropbear's prefill/action scheduler owns batching; do not add HUD `BatchedModel` |
 | Model attribution | Immutable provider identity is recorded in trace metadata; generic HUD model attribution remains an upstream API request |
+
+`PooledRobotAgent` is configured directly; it is not registered with HUD's
+`create_agent()` factory or model gateway catalog. `HUDRuntime` hosts the
+simulators while the Python agent runs in the caller's process. Full-agent
+execution through `HostedRuntime` is unsupported: this adapter does not provide
+the language agents' serializable `hosted_spec()` contract.
 
 The additional context managers make billable resource ownership visible. Closing
 an HTTP client alone does not stop a deployment. The integration waits for the
@@ -202,7 +235,7 @@ Active cohort width, exposed provider slots and funded capacity are distinct:
 | Provider configuration | Sequential active cohort widths | Retained funded capacity |
 |---|---|---|
 | `PooledProvider(concurrency=8)` | 8, then 3, then 1 | 8 robot slots on one H100 throughout |
-| `PooledProvider(concurrency=64)` | 64, then 63 | 64 robot slots on eight H100s throughout |
+| `PooledProvider(concurrency=64)` | 64, 32, 1, 9, 33, 63 | 64 robot slots on eight H100s throughout |
 | `PooledProvider(concurrency=3)` | 1–3 only | 8 robot slots on one H100; only three slots exposed |
 
 These are supported composition patterns, not live GPU qualification results.
