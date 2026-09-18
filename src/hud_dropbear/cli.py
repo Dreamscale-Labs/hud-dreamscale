@@ -7,6 +7,7 @@ import hashlib
 import importlib.metadata
 import json
 import subprocess
+import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -18,7 +19,6 @@ from hud import DockerRuntime, HUDRuntime, Runtime, Task, Taskset
 from hud.settings import settings
 from hud.utils.platform import canonical_record_id
 
-from .agent import DropbearRobotAgent
 from .contract import CONTROL_HZ, ENV_NAME, MAX_STEPS, TASK_SUITES
 from .platform import verify_platform
 from .telemetry import CURRENT_TASK, Evidence
@@ -80,30 +80,36 @@ async def job_runtime(provider, first_task, emit):
 
 def startup_metrics(events):
     first = [r["elapsed_s"] for r in events if r["event"] == "first_action_confirmed"]
-    starts = {r["task"]: r["elapsed_s"] for r in events if r["event"] == "environment_starting"}
-
-    def intervals(event):
-        return {
-            r["task"]: r["elapsed_s"] - starts[r["task"]]
-            for r in events
-            if r["event"] == event and r.get("task") in starts
-        }
-
+    # Read chronologically. A last-start-by-task dict silently paired an earlier
+    # episode with a later reset when HUD repeated a task slug.
+    starts, active, occurrences = {}, {}, {}
+    intervals = {"environment_ready": {}, "first_action_confirmed": {}}
     inferences = [r for r in events if r["event"] == "inference"]
     providers = [r for r in events if r["event"] == "provider_ready"]
     first_by_task = {}
     steady = []
-    for row in inferences:
+    for row in events:
         task = row.get("task")
-        if task in first_by_task:
-            steady.append(row["duration_s"])
-        else:
-            first_by_task[task] = row["duration_s"]
+        if row["event"] == "environment_starting":
+            occurrences[task] = occurrences.get(task, 0) + 1
+            key = row.get("episode_id") or (
+                task if occurrences[task] == 1 else f"{task}#{occurrences[task]}"
+            )
+            active[task] = key
+            starts[key] = row["elapsed_s"]
+        key = row.get("episode_id") or active.get(task, task)
+        if row["event"] in intervals and key in starts:
+            intervals[row["event"]][key] = row["elapsed_s"] - starts[key]
+        if row["event"] == "inference":
+            if key in first_by_task:
+                steady.append(row["duration_s"])
+            else:
+                first_by_task[key] = row["duration_s"]
     return {
         "cli_entry_to_first_action_s": first[0] if first else None,
         "provider_readiness_s": providers[0]["duration_s"] if providers else None,
-        "simulation_setup_s": intervals("environment_ready"),
-        "episode_start_to_first_action_s": intervals("first_action_confirmed"),
+        "simulation_setup_s": intervals["environment_ready"],
+        "episode_start_to_first_action_s": intervals["first_action_confirmed"],
         "first_inference_s": inferences[0]["duration_s"] if inferences else None,
         "episode_first_inference_s": first_by_task,
         "steady_state_inference_samples_s": steady,
@@ -186,6 +192,8 @@ def summarize(job, task_rows=()):
 
 
 async def evaluate(args):
+    from .agent import DropbearRobotAgent
+
     if args.runtime == "hud" and not settings.api_key:
         raise ValueError("HUD-hosted simulation requires a configured HUD API key")
     if args.runtime == "docker":
@@ -343,8 +351,15 @@ def parser():
     return p
 
 
-def main():
-    args = parser().parse_args()
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in {"pooled", "profile-startup"}:
+        if argv[0] == "pooled":
+            from .pooled_cli import main as command
+        else:
+            from .profile_startup import main as command
+        return command(argv[1:])
+    args = parser().parse_args(argv)
     suites = list(TASK_SUITES) if args.all_suites else [args.suite]
     if args.taskset is None and any(
         tid >= len(TASK_SUITES[suite]) for suite in suites for tid in args.task_ids

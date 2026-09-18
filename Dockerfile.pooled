@@ -1,0 +1,5 @@
+# Build the same CPU/OSMesa environment with the versioned raw360 entrypoint.
+# Supply an immutable image digest built from Dockerfile.hud in this revision.
+ARG LIBERO_BASE_IMAGE
+FROM ${LIBERO_BASE_IMAGE}
+CMD ["hud", "serve", "pooled_env.py", "--host", "0.0.0.0", "--port", "8765"]

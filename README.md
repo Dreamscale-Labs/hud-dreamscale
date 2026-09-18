@@ -5,6 +5,11 @@ Dropbear-hosted [MolmoAct2-LIBERO](https://huggingface.co/allenai/MolmoAct2-LIBE
 inference. HUD owns simulation, action execution, grading and video traces;
 Dropbear owns the model server. The agent needs no local GPU or model weights.
 
+The new [pooled inference integration](docs/pooled-inference.md) adds independent
+parallel environments, an async HTTP provider and explicit job resource ownership.
+It currently requires the merged SDK source; its live HUD qualification is pending.
+The existing exclusive-session workflow below remains available.
+
 The [six-episode demo](docs/demo.md) records the validated taskset, all final
 qualification attempts and version pins. The final hosted run succeeded on all
 six episodes; this is an integration result, not a benchmark-wide accuracy claim.
@@ -201,10 +206,13 @@ from hud import HUDRuntime, Taskset
 from hud_dropbear import DropbearRobotAgent
 from hud_dropbear.cli import tasks
 
+
 async def evaluate():
     async with DropbearRobotAgent() as agent:
         return await Taskset("libero-demo", tasks()).run(
-            agent, runtime=HUDRuntime(), max_concurrent=1,
+            agent,
+            runtime=HUDRuntime(),
+            max_concurrent=1,
         )
 ```
 
