@@ -14,21 +14,41 @@ async def verify_platform(summary, *, client=None):
         wanted = set(requested)
         if len(wanted) != len(requested):
             raise ValueError("Each episode must have a distinct HUD trace")
-        traces, offset = {}, 0
+        traces, offset, expected_total = {}, 0, None
         while True:
             data = await client.aget(
                 f"/jobs/{job_id}/traces", params={"limit": 100, "offset": offset}
             )
-            items = data if isinstance(data, list) else data.get("items", [])
-            before = len(traces)
-            traces.update({canonical_record_id(row["id"]): row for row in items})
+            items = data if isinstance(data, list) else data.get("items")
+            total = data.get("total") if isinstance(data, dict) else None
+            more = data.get("has_more") if isinstance(data, dict) else None
+            if not isinstance(items, list) or len(items) > 100:
+                raise ValueError("Invalid HUD trace inventory page")
+            if total is not None:
+                if type(total) is not int or total < 0:
+                    raise ValueError("Invalid HUD trace inventory total")
+                if expected_total is not None and total != expected_total:
+                    raise ValueError("HUD trace inventory changed during pagination")
+                expected_total = total
+            if more is not None and type(more) is not bool:
+                raise ValueError("Invalid HUD trace pagination flag")
+            for row in items:
+                key = canonical_record_id(row["id"])
+                if key in traces:
+                    raise ValueError("HUD trace inventory repeated an identity")
+                traces[key] = row
             offset += len(items)
-            if not items or len(traces) == before:
+            if expected_total is not None:
+                if offset > expected_total or (more is False and offset < expected_total):
+                    raise ValueError("HUD trace pagination contradicts its total")
+                if offset == expected_total:
+                    if more is True:
+                        raise ValueError("HUD trace pagination contradicts its total")
+                    break
+            elif more is False or (more is None and len(items) < 100):
                 break
-            if isinstance(data, dict) and offset >= data.get("total", float("inf")):
-                break
-            if len(items) < 100:
-                break
+            if not items:
+                raise ValueError("HUD trace inventory stopped before declared completion")
             if offset >= 10000:
                 raise ValueError("Job trace inventory exceeds the verification bound")
         if set(traces) != wanted:

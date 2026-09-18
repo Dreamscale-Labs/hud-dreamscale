@@ -125,3 +125,50 @@ async def test_media_without_initialization_cannot_prove_playable_video():
         client=SimpleNamespace(aget=get),
     )
     assert not result["verified"]
+
+
+@pytest.mark.parametrize("metadata", [{"total": 2}, {"has_more": True}])
+async def test_short_page_cannot_hide_an_extra_job_trace(metadata):
+    trace_id, extra_id = "1" * 32, "2" * 32
+    offsets = []
+
+    async def get(path, *, params):
+        assert path.endswith("/traces"), "Membership must be checked before camera evidence"
+        offsets.append(params["offset"])
+        if params["offset"] == 0:
+            return {"items": [{"id": trace_id}], **metadata}
+        return {"items": [{"id": extra_id}], "total": 2, "has_more": False}
+
+    result = await verify_platform(
+        {"job_id": "0" * 32, "runs": [{"trace_id": trace_id, "reward": 1}]},
+        client=SimpleNamespace(aget=get),
+    )
+    assert not result["verified"]
+    assert offsets == [0, 1]
+
+
+@pytest.mark.parametrize(
+    "second_page",
+    [
+        {"items": [], "total": 2},
+        {"items": [{"id": "1" * 32}], "total": 2},
+        {"items": [], "total": 1},
+        {"items": [], "total": 2, "has_more": False},
+    ],
+)
+async def test_incomplete_or_inconsistent_trace_inventory_fails_closed(second_page):
+    offsets = []
+
+    async def get(path, *, params):
+        assert path.endswith("/traces")
+        offsets.append(params["offset"])
+        if params["offset"] == 0:
+            return {"items": [{"id": "1" * 32}], "total": 2}
+        return second_page
+
+    result = await verify_platform(
+        {"job_id": "0" * 32, "runs": [{"trace_id": "1" * 32, "reward": 1}]},
+        client=SimpleNamespace(aget=get),
+    )
+    assert not result["verified"] and result["error_type"] == "ValueError"
+    assert offsets == [0, 1]
