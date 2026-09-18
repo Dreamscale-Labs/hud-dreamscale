@@ -150,17 +150,19 @@ class ExclusiveRegistryCampaign:
 
     async def _cleanup(self):
         # A wrong build invalidates the run, not ownership of its allocated instances.
-        created = await self._created(validate_build=False)
-        if self.owned_ids is not None and set(created) != self.owned_ids:
-            return {
-                "verified": False,
-                "reason": "owned_instance_inventory_changed",
-                "instance_ids": sorted(self.owned_ids),
-            }
-        owned = self.owned_ids if self.owned_ids is not None else set(created)
+        if self.owned_ids is None:
+            created = await self._created(validate_build=False)
+            owned = set(created)
+        else:
+            # Once verified, these exact IDs remain ours even if another runtime
+            # appears in the registry. Fail the campaign, but still stop our IDs.
+            inventory = await instance_inventory(self.platform, self.registry_id)
+            created = {key: row for key, row in inventory.items() if key not in self.before_ids}
+            owned = self.owned_ids
+        changed = set(created) != owned
         if not owned:
             return {"verified": False, "reason": "no_created_instance_evidence"}
-        live = [key for key in owned if not _terminated(created[key])]
+        live = [key for key in owned if key not in created or not _terminated(created[key])]
         if live:
             result = await self.platform.apost(
                 "/instance/stop",
@@ -179,9 +181,13 @@ class ExclusiveRegistryCampaign:
             inventory = await instance_inventory(self.platform, self.registry_id)
             if all(key in inventory and _terminated(inventory[key]) for key in owned):
                 return {
-                    "verified": True,
-                    "reason": "instances_terminated",
+                    "verified": not changed,
+                    "reason": "owned_instance_inventory_changed"
+                    if changed
+                    else "instances_terminated",
+                    "termination_confirmed": True,
                     "instance_ids": sorted(owned),
+                    "unexpected_instance_ids": sorted(set(created) - owned),
                 }
             await asyncio.sleep(2)
         return {
@@ -192,17 +198,22 @@ class ExclusiveRegistryCampaign:
 
     async def __aexit__(self, exc_type, exc, traceback):
         cleanup = asyncio.create_task(asyncio.wait_for(self._cleanup(), 120))
+        cancelled = False
         try:
-            self.cleanup_receipt = await asyncio.shield(cleanup)
-        except asyncio.CancelledError:
-            self.cleanup_receipt = await cleanup
-            raise
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+            self.cleanup_receipt = cleanup.result()
         except Exception as error:
             self.cleanup_receipt = {"verified": False, "reason": type(error).__name__}
             if exc is not None:
                 exc.add_note(f"Campaign cleanup unresolved: {type(error).__name__}")
                 return False
             raise
+        if cancelled:
+            raise asyncio.CancelledError
         if not self.cleanup_receipt["verified"]:
             if exc is not None:
                 exc.add_note(f"Campaign cleanup unresolved: {self.cleanup_receipt['reason']}")

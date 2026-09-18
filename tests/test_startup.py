@@ -466,6 +466,82 @@ async def test_wrong_build_rejects_readiness_but_still_cleans_owned_instance():
     assert platform.stopped == ["owned"] and guard.cleanup_receipt["verified"]
 
 
+async def test_inventory_change_still_stops_previously_verified_owned_instances():
+    class Platform:
+        rows = []
+        stopped = []
+
+        async def aget(self, path, *, params=None):
+            if path == "/registry/registry":
+                return {"id": "registry", "name": "environment"}
+            return {"instances": self.rows, "has_more": False}
+
+        async def apost(self, path, *, json):
+            self.stopped += json["instance_ids"]
+            for row in self.rows:
+                if row["id"] in json["instance_ids"]:
+                    row["status"] = "terminated"
+            return {"stopped": len(json["instance_ids"])}
+
+    platform = Platform()
+    guard = ExclusiveRegistryCampaign(
+        platform, "registry", environment_name="environment", expected_instances=1
+    )
+    with pytest.raises(RuntimeError, match="owned_instance_inventory_changed"):
+        async with guard:
+            platform.rows = [{"id": "owned", "registry_id": "registry", "status": "running"}]
+            await guard.validate_ready()
+            platform.rows.append({"id": "unowned", "registry_id": "registry", "status": "running"})
+    assert platform.stopped == ["owned"]
+    assert platform.rows[1]["status"] == "running"
+    assert guard.cleanup_receipt["termination_confirmed"]
+    assert not guard.cleanup_receipt["verified"]
+    assert guard.cleanup_receipt["unexpected_instance_ids"] == ["unowned"]
+
+
+async def test_repeated_cancellation_cannot_interrupt_owned_instance_stop():
+    stop_started, allow_stop = asyncio.Event(), asyncio.Event()
+
+    class Platform:
+        rows = []
+
+        async def aget(self, path, *, params=None):
+            if path == "/registry/registry":
+                return {"id": "registry", "name": "environment"}
+            return {"instances": self.rows, "has_more": False}
+
+        async def apost(self, path, *, json):
+            assert json["instance_ids"] == ["owned"]
+            stop_started.set()
+            await allow_stop.wait()
+            self.rows[0]["status"] = "terminated"
+            return {"stopped": 1}
+
+    platform = Platform()
+    guard = ExclusiveRegistryCampaign(
+        platform, "registry", environment_name="environment", expected_instances=1
+    )
+    await guard.__aenter__()
+    platform.rows = [{"id": "owned", "registry_id": "registry", "status": "running"}]
+    await guard.validate_ready()
+    closing = asyncio.create_task(guard.__aexit__(None, None, None))
+    await asyncio.wait_for(stop_started.wait(), 1)
+    try:
+        closing.cancel()
+        await asyncio.sleep(0)
+        closing.cancel()
+        await asyncio.sleep(0)
+        allow_stop.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(closing, 1)
+        assert platform.rows[0]["status"] == "terminated"
+        assert guard.cleanup_receipt["verified"]
+    finally:
+        allow_stop.set()
+        if not closing.done():
+            await asyncio.gather(closing, return_exceptions=True)
+
+
 async def test_inventory_pagination_reads_all_and_rejects_shifted_pages():
     class Platform:
         offsets = []
