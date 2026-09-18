@@ -9,8 +9,12 @@ batching and inference. The client needs no GPU or model weights.
 cohorts each passed all 16 episodes, and a three-lane cohort passed all six,
 with zero episode integration errors, verified grades and both camera videos.
 A single-lane attempt achieved five successes and one transport/admission error;
-it failed acceptance and remains recorded. Larger live cohorts are still being
-qualified; do not generalize these results to every width. The older
+it failed acceptance and remains recorded. The latest 64-lane cohort recorded
+78 successes across all 128 planned attempts (60.9375%), but its 50 integration
+errors failed acceptance. Its manifest retains every attempt; 254 camera videos
+decoded, with two streams absent from an episode that failed its handshake before
+receiving observations. The subsequent 32-lane cohort did not start. These results
+do not qualify every width. The older
 six-episode demo uses the separate exclusive-session API. Local contract tests
 are not GPU capacity evidence.
 
@@ -66,14 +70,29 @@ credentials outside this repository using their normal SDK configuration.
 The CLI accepts `DROPBEAR_API_KEY` from the environment, with saved SDK
 configuration as the fallback; credentials are never written to run evidence.
 
-The current development qualification service also requires an operator to
-provision a funded GPU app and a matching account grant before each owned run.
+The finite qualification campaign above requires an operator to provision a
+funded GPU app and matching finite account grant before each owned run.
 Credentials alone do not provision this capacity. The CLI creates one owned
-inference deployment and stops it when the run exits; that stop terminates the
-granted GPU app. Before another CLI run, the operator must provision a fresh app
-and configure its matching grant. A new creation key or unused time on the old
-grant does not recreate the stopped app. This is a current Dropbear provisioning
-limitation, not a HUD requirement or the intended self-service product workflow.
+inference deployment and stops it when the run exits; in finite mode that stop
+terminates the granted GPU app. Another finite run therefore needs a fresh app
+and grant. A new creation key or unused grant time does not recreate a stopped app.
+
+The newly merged Dropbear server source also supports ongoing grants and reusable
+service apps. In that mode, stopping a deployment releases its workers while
+leaving the service apps available for a later deployment; the control plane
+renews a funded numeric expiry. Deployment and live qualification of this source
+are still pending. The earlier finite results do not establish ongoing renewal,
+worker rollover or service reuse.
+
+`PooledProvider` checks deployment authority in the background, at most 60 seconds
+apart and earlier near expiry. It accepts a new horizon only from authenticated
+status for the same deployment, release, origin and capacity. Temporary transport
+failures retain only the last verified unexpired horizon; expiry, identity change
+or lost authority fences inference and triggers owned-deployment cleanup. These
+checks do not add status requests to ordinary inference calls or renew funding
+themselves. The finite campaign runner still enforces its original fixed deadline
+and budget; it does not become an ongoing runner through provider status refresh.
+
 The operator also owns the separately billable CPU gateway/sweeper app. Stopping
 the inference deployment does not stop that app: a campaign-owned gateway needs
 explicit operator teardown, while a shared gateway needs its own funded lifetime
@@ -257,12 +276,16 @@ the success gate to each cohort independently. All cohorts reference the same
 provider creation and final cleanup receipt. Close each simulator pool before
 the next cohort, keep the provider's outer context open until all cohorts finish,
 and close it reliably on completion, failure or cancellation. Shared reuse does
-not extend the original deployment/grant lifetime or budget reservation.
+not itself extend the deployment/grant lifetime or budget reservation.
+For an ongoing service, only a fresh authenticated status response can establish
+the control plane's renewed authority; the operator must fund that service
+lifetime separately.
 
 The CLI still owns one cohort per invocation and has no cross-cohort mode.
-Independent cold trials require fresh provisioned apps and grants: three
-8-wide cold trials need three fresh apps, even though warm 8/3/1 cohorts can
-share one allocation.
+The finite qualification protocol uses fresh provisioned apps and grants for
+independent cold trials: three 8-wide cold trials need three fresh apps, even
+though warm 8/3/1 cohorts can share one allocation. This protocol is distinct
+from the newly merged ongoing service lifecycle.
 
 ## Evidence and timing
 

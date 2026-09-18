@@ -27,6 +27,9 @@ CREATION_REJECTIONS = {
     "creation_key_required",
 }
 MODEL = "molmoact2-libero"
+STATUS_REFRESH_INTERVAL_S = 60.0
+STATUS_REFRESH_MARGIN_S = 30.0
+STATUS_REFRESH_RETRY_S = 5.0
 
 
 def _http_operation(request):
@@ -143,6 +146,8 @@ class PooledProvider:
         self._creation_calls = 0
         self._entered = self._ready = self._closing = False
         self._close_task = None
+        self._status_task = None
+        self._status_error = None
         self._active = set()
         self._busy = set()
         self._fenced = set()
@@ -351,10 +356,75 @@ class PooledProvider:
                 raise ValueError(f"Deployment {key} changed while waiting for readiness")
         if not isinstance(value.get("api_base"), str):
             raise ValueError("Deployment has no action API origin")
+        if self.deployment is not None and value["api_base"] != self.deployment.get("api_base"):
+            raise ValueError("Deployment action API origin changed")
         for key in ("expires_at", "control_lease_until"):
             stamp = value.get(key)
             if type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp <= time.time():
                 raise ValueError(f"Deployment {key} is missing or expired")
+
+    def _authority_remaining(self):
+        return (
+            min(self.deployment["expires_at"], self.deployment["control_lease_until"]) - time.time()
+        )
+
+    async def _refresh_deployment_status(self):
+        """Read renewed authority; never extend funding or infer an unobserved renewal."""
+        remaining = self._authority_remaining()
+        if remaining <= 0:
+            raise SlotFencedError("The last verified deployment authority expired")
+        started = time.monotonic()
+        async with asyncio.timeout(min(self.request_timeout, remaining)):
+            value = await self._control.deployment(self.deployment_id)
+        self._validate_deployment(value)
+        if value.get("status") not in {"starting", "ready", "degraded"}:
+            raise SlotFencedError("The owned deployment is no longer serving")
+        self.deployment = value
+        self._event(
+            "provider_authority_refreshed",
+            duration_s=time.monotonic() - started,
+            status=value["status"],
+            ready_robots=value.get("ready_robots", 0),
+            expires_at=value["expires_at"],
+            control_lease_until=value["control_lease_until"],
+        )
+
+    async def _watch_deployment_status(self):
+        """Keep renewal reads outside model RTT; stale authority never permits a POST."""
+        retry = False
+        try:
+            while not self._closing:
+                remaining = self._authority_remaining()
+                if remaining <= 0:
+                    raise SlotFencedError("The last verified deployment authority expired")
+                delay = min(
+                    STATUS_REFRESH_RETRY_S if retry else STATUS_REFRESH_INTERVAL_S,
+                    max(0.1, remaining - STATUS_REFRESH_MARGIN_S),
+                    remaining,
+                )
+                await asyncio.sleep(delay)
+                if self._closing:
+                    return
+                try:
+                    await self._refresh_deployment_status()
+                    retry = False
+                except (httpx.TransportError, TimeoutError) as exc:
+                    retry = True
+                    self._event("provider_authority_refresh_failed", **_error_fields(exc))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._status_error = exc
+            self._ready = False
+            self._fenced.update(range(self.concurrency))
+            self._cleanup_event("provider_authority_lost", **_error_fields(exc))
+            # Stop owned compute even if the client is idle. The next predict or
+            # context exit still reports this failure; cleanup is never acceptance.
+            if self._close_task is None:
+                self._close_task = asyncio.create_task(self._cleanup())
+                self._close_task.add_done_callback(
+                    lambda task: None if task.cancelled() else task.exception()
+                )
 
     async def __aenter__(self):
         if self._entered or self._closing:
@@ -412,6 +482,7 @@ class PooledProvider:
                 duration_s=time.monotonic() - started,
                 **{key: value[key] for key in ("release_id", "release_sha256", "ready_robots")},
             )
+            self._status_task = asyncio.create_task(self._watch_deployment_status())
             return self
         except BaseException as exc:
             try:
@@ -511,8 +582,10 @@ class PooledProvider:
         self, slot, observation, instruction, episode_id, noise_seed, *, trace_id=None
     ):
         if not self.is_slot_available(slot):
-            raise SlotFencedError(f"Slot {slot} is unavailable, busy or fenced")
-        if time.time() >= self.deployment["expires_at"]:
+            raise SlotFencedError(
+                f"Slot {slot} is unavailable, busy or fenced"
+            ) from self._status_error
+        if self._authority_remaining() <= 0:
             self._fenced.update(range(self.concurrency))
             raise SlotFencedError("The owned deployment's finite grant expired")
         self._busy.add(slot)
@@ -547,7 +620,7 @@ class PooledProvider:
             # Own the arrays while PNG encoding runs outside the asyncio event loop.
             raw = {key: np.array(value, copy=True) for key, value in observation.items()}
             for attempt_index in range(self.max_not_admitted_resubmissions + 1):
-                if self._closing or not self._ready or time.time() >= self.deployment["expires_at"]:
+                if self._closing or not self._ready or self._authority_remaining() <= 0:
                     raise SlotFencedError("The owned deployment cannot accept another request")
                 submitted = False
                 journal_before_post_s = journal_terminal_s = 0.0
@@ -587,7 +660,7 @@ class PooledProvider:
                     )
                 finally:
                     journal_before_post_s = time.monotonic() - checkpoint_started
-                if self._closing or time.time() >= self.deployment["expires_at"]:
+                if self._closing or self._authority_remaining() <= 0:
                     raise SlotFencedError("The owned deployment cannot accept another request")
                 self._sequences[slot] += 1
                 self._pending[slot] = identity
@@ -707,6 +780,9 @@ class PooledProvider:
         failure = None
         try:
             async with asyncio.timeout(self.close_timeout):
+                if self._status_task is not None:
+                    self._status_task.cancel()
+                    await asyncio.gather(self._status_task, return_exceptions=True)
                 active = list(self._active)
                 for task in active:
                     task.cancel()
@@ -799,9 +875,13 @@ class PooledProvider:
             )
 
     async def close(self):
+        self._closing = True
+        self._ready = False
         if self._close_task is None:
             self._close_task = asyncio.create_task(self._cleanup())
         await self._protected(write=self._close_task)
+        if self._status_error is not None:
+            raise self._status_error
 
     async def __aexit__(self, exc_type, exc, tb):
         try:
