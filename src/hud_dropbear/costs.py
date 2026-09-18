@@ -363,6 +363,11 @@ class CampaignBudget:
         )
 
     def reconcile_stage(self, stage, *, evidence_ref):
+        """Release holds only after every funded provider and bound resource settles.
+
+        Single-provider stages need no dummy resource for an unused provider.
+        A zero hold never exempts an actually bound resource from verification.
+        """
         if not evidence_ref:
             raise ValueError("Reconciliation evidence is required")
 
@@ -371,8 +376,15 @@ class CampaignBudget:
             if row is None or row["released"]:
                 raise ValueError("Stage is missing or already reconciled")
             resources = [state["resources"][key] for key in row["resources"]]
-            if {resource["provider"] for resource in resources} != set(PROVIDERS):
-                raise ValueError("Both Modal and HUD resource evidence are required")
+            if not resources:
+                raise ValueError("Bound resource evidence is required")
+            funded = {provider for provider in PROVIDERS if amount(row["holds_usd"][provider]) > 0}
+            missing = funded - {resource["provider"] for resource in resources}
+            if missing:
+                raise ValueError(
+                    "Funded providers require bound resource evidence: "
+                    + ", ".join(sorted(missing))
+                )
             for resource in resources:
                 stopped, settled = resource["terminated_at"], resource["settled_through"]
                 if stopped is None or settled is None or amount(settled) < amount(stopped):

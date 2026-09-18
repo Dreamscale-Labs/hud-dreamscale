@@ -135,6 +135,120 @@ def test_complete_reconciliation_releases_hold_but_never_spend(tmp_path):
     assert Decimal(budget.report()["modal"]["conservative_liability_usd"]) == Decimal("1.284")
 
 
+def reserve_single_provider(budget, provider):
+    budget.reserve_stage(
+        "single",
+        estimate=estimate(
+            modal_replica_usd_per_second="0.001" if provider == "modal" else "0",
+            modal_overhead_usd_per_second="0",
+            hud_hourly_rate="0.36" if provider == "hud" else "0",
+        ),
+        modal_lag_usd="0.2" if provider == "modal" else "0",
+        hud_lag_usd="0.01" if provider == "hud" else "0",
+        evidence_ref="single-provider-rate-receipt",
+    )
+
+
+def bind_owned(budget, provider, resource, *, stage="single"):
+    budget.register_owned_resource(provider, resource, baseline_usd="0", evidence_ref="ownership")
+    budget.bind_resource(stage, provider, resource)
+
+
+def settle_owned(budget, provider, resource, *, confirm=True, coverage="1000"):
+    if confirm:
+        budget.confirm_termination(provider, resource, terminated_at="1000", evidence_ref="stop")
+    budget.record_billing(
+        provider, resource, total_usd="0.1", evidence_ref="posted-bill", settled_through=coverage
+    )
+
+
+@pytest.mark.parametrize("provider", ["hud", "modal"])
+def test_single_provider_stage_reconciles_without_dummy_resources(tmp_path, provider):
+    budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="200", hud_cap_usd="10")
+    reserve_single_provider(budget, provider)
+    bind_owned(budget, provider, "only-owned-resource")
+    settle_owned(budget, provider, "only-owned-resource")
+    budget.reconcile_stage("single", evidence_ref="complete-single-provider-receipt")
+    reopened = CampaignBudget(budget.path).report()
+    assert reopened[provider]["unreconciled_holds_usd"] == "0"
+    assert reopened[provider]["conservative_liability_usd"] == "0.1"
+    unused = "modal" if provider == "hud" else "hud"
+    assert reopened[unused]["conservative_liability_usd"] == "0"
+
+
+@pytest.mark.parametrize("missing", ["hud", "modal"])
+def test_mixed_stage_requires_bound_evidence_from_every_funded_provider(tmp_path, missing):
+    budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="200", hud_cap_usd="10")
+    reserve(budget)
+    present = "modal" if missing == "hud" else "hud"
+    bind_owned(budget, present, "bound", stage="eight")
+    settle_owned(budget, present, "bound")
+    # A fully settled global resource is insufficient until explicitly bound to this stage.
+    budget.register_owned_resource(missing, "unbound", baseline_usd="0", evidence_ref="ownership")
+    settle_owned(budget, missing, "unbound")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match=f"Funded providers.*{missing}"):
+        budget.reconcile_stage("eight", evidence_ref="missing-stage-binding")
+    assert budget.path.read_bytes() == before
+    assert all(Decimal(row["unreconciled_holds_usd"]) > 0 for row in budget.report().values())
+
+
+def test_every_bound_resource_must_settle_even_with_same_provider(tmp_path):
+    budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="200", hud_cap_usd="10")
+    reserve_single_provider(budget, "hud")
+    for resource in ("instance-first", "instance-second"):
+        bind_owned(budget, "hud", resource)
+        settle_owned(
+            budget, "hud", resource, coverage="1000" if resource.endswith("first") else None
+        )
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="complete posted billing"):
+        budget.reconcile_stage("single", evidence_ref="one-resource-unsettled")
+    assert budget.path.read_bytes() == before
+    settle_owned(budget, "hud", "instance-second", confirm=False)
+    budget.reconcile_stage("single", evidence_ref="both-resource-bills-complete")
+    assert budget.report()["hud"]["conservative_liability_usd"] == "0.2"
+
+
+@pytest.mark.parametrize("confirm,coverage", [(False, "1000"), (True, None), (True, "999")])
+def test_zero_hold_never_exempts_a_bound_provider_resource(tmp_path, confirm, coverage):
+    budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="200", hud_cap_usd="10")
+    reserve_single_provider(budget, "hud")
+    bind_owned(budget, "hud", "funded-instance")
+    settle_owned(budget, "hud", "funded-instance")
+    bind_owned(budget, "modal", "unexpected-owned-app")
+    settle_owned(budget, "modal", "unexpected-owned-app", confirm=confirm, coverage=coverage)
+    assert budget.report()["modal"]["unreconciled_holds_usd"] == "0"
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="Termination and complete posted billing"):
+        budget.reconcile_stage("single", evidence_ref="zero-hold-does-not-prove-settlement")
+    assert budget.path.read_bytes() == before
+    settle_owned(budget, "modal", "unexpected-owned-app", confirm=not confirm)
+    budget.reconcile_stage("single", evidence_ref="every-bound-resource-complete")
+    assert budget.report()["modal"]["conservative_liability_usd"] == "0.1"
+    assert budget.report()["hud"]["unreconciled_holds_usd"] == "0"
+
+
+def test_lag_only_funding_still_requires_provider_evidence(tmp_path):
+    budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="200", hud_cap_usd="10")
+    reserve(budget, modal_replica_usd_per_second="0", modal_overhead_usd_per_second="0")
+    bind_owned(budget, "hud", "instance", stage="eight")
+    settle_owned(budget, "hud", "instance")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="Funded providers.*modal"):
+        budget.reconcile_stage("eight", evidence_ref="modal-lag-reservation-is-still-funded")
+    assert budget.path.read_bytes() == before
+
+
+def test_reconciliation_without_any_bound_resource_still_fails(tmp_path):
+    budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="200", hud_cap_usd="10")
+    reserve_single_provider(budget, "hud")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="Bound resource evidence"):
+        budget.reconcile_stage("single", evidence_ref="unproven-no-allocation")
+    assert budget.path.read_bytes() == before
+
+
 def test_api_app_cost_is_counted_once_when_shared_by_sequential_stages(tmp_path):
     budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="200", hud_cap_usd="10")
     reserve(budget, "first")
