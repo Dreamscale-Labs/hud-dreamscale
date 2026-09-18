@@ -2,6 +2,11 @@
 
 Configure HUD_API_KEY and the Dropbear SDK credentials, then run this file with
 --registry-id selecting a dedicated, otherwise idle HUD environment registry.
+For the current development qualification service, an operator must first
+provision a funded GPU app and matching account grant. This example owns one
+cohort and stops that app on exit. A subsequent run needs operator reprovisioning;
+credentials or a new creation key do not recreate the stopped app. Episodes
+within this run reuse its open provider and remain billable until cleanup.
 For a saved cohort manifest, timing report and videos, use:
     hud-dropbear pooled --runtime hud --concurrency 8 --registry-id YOUR_REGISTRY_ID
 """

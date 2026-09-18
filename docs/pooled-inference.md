@@ -45,6 +45,15 @@ credentials outside this repository using their normal SDK configuration.
 The CLI accepts `DROPBEAR_API_KEY` from the environment, with saved SDK
 configuration as the fallback; credentials are never written to run evidence.
 
+The current development qualification service also requires an operator to
+provision a funded GPU app and a matching account grant before each owned run.
+Credentials alone do not provision this capacity. The CLI creates one owned
+inference deployment and stops it when the run exits; that stop terminates the
+granted GPU app. Before another CLI run, the operator must provision a fresh app
+and configure its matching grant. A new creation key or unused time on the old
+grant does not recreate the stopped app. This is a current Dropbear provisioning
+limitation, not a HUD requirement or the intended self-service product workflow.
+
 ```bash
 .venv/bin/hud-dropbear pooled \
   --runtime hud \
@@ -171,6 +180,15 @@ The additional context managers make billable resource ownership visible. Closin
 an HTTP client alone does not stop a deployment. The integration waits for the
 owned deployment to report `stopped` and independently verifies termination of
 the exact HUD instances. It never adopts or stops someone else's deployment.
+
+Warm episodes within a run reuse the open provider, including its clients and
+slot sequences. A custom campaign can retain that same provider across cohorts
+of the same concurrency, within its original funded lifetime. Such cohorts must
+have distinct task and evidence identities, share the deployment's final cleanup
+receipt, and be reported as warm reuse; the retained capacity remains billable.
+The CLI currently owns one cohort per invocation and has no cross-cohort or
+capacity-resizing mode. Independent cold trials require fresh provisioned apps
+and grants, rather than retaining a warm provider between trials.
 
 ## Evidence and timing
 
