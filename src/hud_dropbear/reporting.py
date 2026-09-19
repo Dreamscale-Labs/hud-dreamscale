@@ -198,8 +198,10 @@ def timing_report(events):
             "interpreter launch and earlier standard-library imports are excluded. Full command "
             "startup requires an external parent-process timestamp.",
             "Successful model calls include client encoding, durable request journaling and "
-            "any recovery and bounded resubmissions. SDK POST attempts exclude those outer "
-            "costs. Failed and cancelled "
+            "any recovery and bounded resubmissions. The legacy sdk_post_attempts_s field "
+            "measures the awaited SDK predict call, including any connection discovery or "
+            "refresh, JSON serialization and response handling. It excludes outer encoding, "
+            "journaling and recovery; it is not isolated HTTP POST RTT. Failed and cancelled "
             "attempts are retained separately, never treated as fast successful responses.",
             "Raw journal checkpoints separate lock wait, async dispatch, executor queue, "
             "write/flush/fsync and event-loop resume by phase. They overlap the outer model "

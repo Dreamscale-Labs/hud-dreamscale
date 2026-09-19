@@ -327,9 +327,7 @@ def test_modal_cap_is_explicit_and_generic(tmp_path):
     assert budget.report()["modal"]["cap_usd"] == "201"
 
 
-def completed_lifetime_fixture(
-    tmp_path, *, terminate=True, shared=False, post_modal_billing=True
-):
+def completed_lifetime_fixture(tmp_path, *, terminate=True, shared=False, post_modal_billing=True):
     """Synthetic provider evidence; never an assertion about actual billing caps."""
     import hashlib
     import json
@@ -594,7 +592,6 @@ def test_completed_repricing_cannot_repeat_refine_or_reopen_stage(tmp_path):
         )
     assert budget.path.read_bytes() == before
 
-
     budget.register_owned_resource("modal", "ap-future", baseline_usd="0", evidence_ref="owned")
     before = budget.path.read_bytes()
     with pytest.raises(ValueError, match="refined"):
@@ -733,3 +730,537 @@ def test_remaining_liability_preserves_inventory_and_current_bill_requirements(t
     with pytest.raises(ValueError):
         reprice_completed(budget, path, hold=hold)
     assert budget.path.read_bytes() == before
+
+
+def migration_fixture(tmp_path, *, prior="schema1", post_modal_billing=True):
+    import copy
+    import hashlib
+    import json
+
+    budget, old_path, old = completed_lifetime_fixture(
+        tmp_path, post_modal_billing=post_modal_billing
+    )
+    if prior == "schema1":
+        reprice_completed(budget, old_path)
+    elif prior == "schema2":
+        hold = remaining_lifetime_proof(old_path, old)
+        reprice_completed(budget, old_path, hold=hold)
+    elif prior == "slack":
+        slack = dict(old, resource_ids=[r["resource_id"] for r in old["resources"]])
+        slack_path = tmp_path / "slack.json"
+        slack_path.write_text(json.dumps(slack))
+        budget.refine_stage_hold(
+            "wide",
+            "modal",
+            hold_usd="110",
+            evidence_path=slack_path,
+            evidence_sha256=hashlib.sha256(slack_path.read_bytes()).hexdigest(),
+        )
+    event = json.loads(budget.path.read_text().splitlines()[-1])
+    proof = copy.deepcopy(old)
+    proof["migration"] = {
+        "previous_event_sha256": event["sha256"],
+        "previous_evidence_sha256": hashlib.sha256(old_path.read_bytes()).hexdigest(),
+    }
+    proof["evidence"].append(
+        {
+            "path": str(old_path.resolve()),
+            "sha256": hashlib.sha256(old_path.read_bytes()).hexdigest(),
+        }
+    )
+    path = tmp_path / "remaining-migration.json"
+    hold = remaining_lifetime_proof(path, proof)
+    return budget, path, proof, hold
+
+
+def migrate_completed(budget, path, hold):
+    import hashlib
+
+    budget.migrate_completed_compute_hold_to_remaining_liability(
+        "wide",
+        "modal",
+        hold_usd=hold,
+        evidence_path=path,
+        evidence_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+
+def test_schema1_migration_preserves_original_allowance_history_and_unsettled_cost(tmp_path):
+    import json
+
+    budget, path, proof, hold = migration_fixture(tmp_path)
+    prefix = budget.path.read_bytes()
+    hud_before = budget.report()["hud"]
+    migrate_completed(budget, path, hold)
+    assert budget.path.read_bytes().startswith(prefix)
+    event = json.loads(budget.path.read_text().splitlines()[-1])
+    assert event["event"] == "migrate_completed_hold"
+    assert event["previous_hold_usd"] == "20"
+    assert event["conservative_lifecycle_estimate_usd"] == "17.5246"
+    assert event["lag_usd"] == "2.4754"
+    assert event["migration"] == proof["migration"]
+    reopened = CampaignBudget(budget.path)
+    assert reopened.report()["hud"] == hud_before
+    report = reopened.report()["modal"]
+    assert report["provider_posted_usd"] == "8.65756176"
+    assert report["unreconciled_holds_usd"] == "11.34243824"
+    assert report["conservative_liability_usd"] == "20.00000000"
+    with pytest.raises(ValueError, match="complete posted billing"):
+        reopened.reconcile_stage("wide", evidence_ref="not settlement")
+    reopened.record_billing("modal", "ap-gpu", total_usd="10.51503124", evidence_ref="late")
+    assert reopened.report()["modal"]["unreconciled_holds_usd"] == hold
+    assert reopened.report()["modal"]["conservative_liability_usd"] == "21.00000000"
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="unmigrated schema-1"):
+        migrate_completed(reopened, path, hold)
+    with pytest.raises(ValueError, match="explicit completed-hold schema migration"):
+        reprice_completed(reopened, path, hold=hold)
+    with pytest.raises(ValueError, match="already refined/repriced"):
+        reprice_completed(reopened, tmp_path / "completed-proof.json")
+    assert budget.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("prior", ["none", "slack", "schema2"])
+def test_migration_requires_a_prior_completed_schema1_proof(tmp_path, prior):
+    budget, path, _, hold = migration_fixture(tmp_path, prior=prior)
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="unmigrated schema-1"):
+        migrate_completed(budget, path, hold)
+    assert budget.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "event_hash",
+        "proof_hash",
+        "schema",
+        "migration_keys",
+        "estimate",
+        "margin",
+        "original",
+        "old_reference",
+        "proof_reference",
+        "ownership",
+        "termination",
+        "baseline",
+        "lower_bill",
+        "evidence_changed",
+        "unknown_creation",
+        "extra_resource",
+    ],
+)
+def test_migration_rejects_changed_original_proof_or_inventory(tmp_path, mutation):
+    import json
+    from pathlib import Path
+
+    budget, path, proof, hold = migration_fixture(tmp_path)
+    if mutation in {"event_hash", "proof_hash"}:
+        key = "previous_event_sha256" if mutation == "event_hash" else "previous_evidence_sha256"
+        proof["migration"][key] = "0" * 64
+    elif mutation == "schema":
+        proof["schema_version"] = 1
+    elif mutation == "migration_keys":
+        proof["migration"]["allow_repeat"] = True
+    elif mutation in {"estimate", "margin", "original"}:
+        key = {
+            "estimate": "conservative_lifecycle_estimate_usd",
+            "margin": "unbilled_lag_usd",
+            "original": "original_planned_estimate_usd",
+        }[mutation]
+        proof[key] = str(Decimal(proof[key]) - Decimal("0.1"))
+        hold = remaining_lifetime_proof(path, proof)
+    elif mutation == "old_reference":
+        proof["evidence"].pop(0)
+    elif mutation == "proof_reference":
+        proof["evidence"].pop()
+    elif mutation == "ownership":
+        proof["resources"][0]["resource_id"] = "ap-another"
+    elif mutation == "termination":
+        proof["resources"][0]["terminated_at"] = "999"
+    elif mutation == "baseline":
+        proof["resources"][0]["baseline_usd"] = "0"
+        hold = remaining_lifetime_proof(path, proof)
+    elif mutation == "lower_bill":
+        proof["resources"][0]["recorded_total_usd"] = "9"
+        hold = remaining_lifetime_proof(path, proof)
+    elif mutation == "evidence_changed":
+        Path(proof["evidence"][0]["path"]).write_text("changed source evidence")
+    elif mutation == "unknown_creation":
+        proof["unknown_resource_creation"] = True
+    elif mutation == "extra_resource":
+        proof["additional_billable_resources"] = ["unpriced-storage"]
+    path.write_text(json.dumps(proof))
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError):
+        migrate_completed(budget, path, hold)
+    assert budget.path.read_bytes() == before
+
+
+def test_migration_rechecks_locked_current_billing_and_allows_exact_later_bill(tmp_path):
+    budget, path, proof, hold = migration_fixture(tmp_path)
+    budget.record_billing("modal", "ap-gpu", total_usd="10.51503124", evidence_ref="new bill")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="stale or differs"):
+        migrate_completed(budget, path, hold)
+    assert budget.path.read_bytes() == before
+    proof["resources"][0]["recorded_total_usd"] = "10.51503124"
+    hold = remaining_lifetime_proof(path, proof)
+    migrate_completed(budget, path, hold)
+    assert budget.report()["modal"]["unreconciled_holds_usd"] == "10.34243824"
+
+
+def test_migration_does_not_claim_missing_billing_is_free_or_release_unchanged_hold(tmp_path):
+    budget, path, proof, hold = migration_fixture(tmp_path, post_modal_billing=False)
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="hold must decrease"):
+        migrate_completed(budget, path, hold)
+    assert budget.path.read_bytes() == before
+    budget.record_billing("modal", "ap-gpu", total_usd="2", evidence_ref="only one bill")
+    proof["resources"][0]["recorded_total_usd"] = "2"
+    hold = remaining_lifetime_proof(path, proof)
+    migrate_completed(budget, path, hold)
+    assert budget.report()["modal"]["unreconciled_holds_usd"] == "19.0000"
+    with pytest.raises(ValueError, match="complete posted billing"):
+        budget.reconcile_stage("wide", evidence_ref="other App bill still missing")
+
+
+def test_migration_rejects_a_settled_stage(tmp_path):
+    budget, path, _, hold = migration_fixture(tmp_path)
+    for provider, identity, total in [
+        ("modal", "ap-gpu", "9.51503124"),
+        ("modal", "ap-gateway", "1.14253052"),
+        ("hud", "instance-owned", "1.20"),
+    ]:
+        budget.record_billing(
+            provider, identity, total_usd=total, settled_through="1000", evidence_ref="final"
+        )
+    budget.reconcile_stage("wide", evidence_ref="synthetic settlement")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="settled"):
+        migrate_completed(budget, path, hold)
+    assert budget.path.read_bytes() == before
+
+
+def revision_fixture(tmp_path, *, prior="schema2", post_modal_billing=True, lag="0.50"):
+    """Second reviewed revision of a completed compute hold: 2x -> 1.25x terminal lifetime."""
+    import copy
+    import hashlib
+    import json
+
+    budget, old_path, old = completed_lifetime_fixture(
+        tmp_path, post_modal_billing=post_modal_billing
+    )
+    if prior == "schema1":
+        reprice_completed(budget, old_path)
+    elif prior == "schema2":
+        hold = remaining_lifetime_proof(old_path, old)
+        reprice_completed(budget, old_path, hold=hold)
+    elif prior == "slack":
+        slack = dict(old, resource_ids=[r["resource_id"] for r in old["resources"]])
+        slack_path = tmp_path / "slack.json"
+        slack_path.write_text(json.dumps(slack))
+        budget.refine_stage_hold(
+            "wide",
+            "modal",
+            hold_usd="110",
+            evidence_path=slack_path,
+            evidence_sha256=hashlib.sha256(slack_path.read_bytes()).hexdigest(),
+        )
+    event = json.loads(budget.path.read_text().splitlines()[-1])
+    captures = []
+    for index, captured in enumerate(("5000", "9000")):
+        capture = tmp_path / f"billing-capture-{index}.json"
+        capture.write_text(json.dumps({"fixture": "provider billing report", "at": captured}))
+        captures.append(
+            {
+                "path": str(capture.resolve()),
+                "sha256": hashlib.sha256(capture.read_bytes()).hexdigest(),
+                "captured_unix_s": captured,
+                "app_totals_usd": {
+                    row["resource_id"]: row["recorded_total_usd"] for row in old["resources"]
+                },
+            }
+        )
+    proof = copy.deepcopy(old)
+    proof.pop("migration", None)
+    previous = Decimal(old["conservative_lifecycle_estimate_usd"])
+    one_times = previous / Decimal("2")
+    revised = one_times * Decimal("1.25")
+    posted = sum(
+        Decimal(row["recorded_total_usd"]) - Decimal(row["baseline_usd"])
+        for row in old["resources"]
+    )
+    remaining = max(revised - posted, Decimal(0))
+    proof.update(
+        schema_version=3,
+        liability_basis="remaining_after_exact_posted_cost",
+        revision={
+            "previous_event_sha256": event["sha256"],
+            "previous_evidence_sha256": hashlib.sha256(old_path.read_bytes()).hexdigest(),
+        },
+        previous_conservative_lifecycle_estimate_usd=str(previous),
+        previous_lifecycle_multiplier="2",
+        one_times_lifetime_estimate_usd=str(one_times),
+        revised_lifecycle_multiplier="1.25",
+        conservative_lifecycle_estimate_usd=str(revised),
+        posted_cost_deduction_usd=str(posted),
+        remaining_lifecycle_allowance_usd=str(remaining),
+        unbilled_lag_usd=lag,
+        billing_captures=captures,
+    )
+    proof["evidence"] = old["evidence"] + [
+        {
+            "path": str(old_path.resolve()),
+            "sha256": hashlib.sha256(old_path.read_bytes()).hexdigest(),
+        }
+    ]
+    path = tmp_path / "revised-proof.json"
+    path.write_text(json.dumps(proof))
+    return budget, path, proof, str(remaining + Decimal(lag))
+
+
+def revise_completed(budget, path, hold, *, digest=None):
+    import hashlib
+
+    budget.revise_completed_compute_hold(
+        "wide",
+        "modal",
+        hold_usd=hold,
+        evidence_path=path,
+        evidence_sha256=digest or hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+
+def test_revision_reduces_completed_hold_once_and_keeps_history(tmp_path):
+    import json
+
+    budget, path, proof, hold = revision_fixture(tmp_path)
+    assert hold == "2.79531324"  # 8.7623 x 1.25 = 10.952875; minus posted 8.65756176; plus 0.50
+    prefix = budget.path.read_bytes()
+    hud_before = budget.report()["hud"]
+    revise_completed(budget, path, hold)
+    assert budget.path.read_bytes().startswith(prefix)
+    event = json.loads(budget.path.read_text().splitlines()[-1])
+    assert event["event"] == "revise_completed_hold"
+    assert event["previous_hold_usd"] == "11.34243824"
+    assert event["hold_usd"] == hold
+    assert event["lag_usd"] == "0.50"
+    assert event["conservative_lifecycle_estimate_usd"] == "10.952875"
+    assert event["previous_conservative_lifecycle_estimate_usd"] == "17.5246"
+    assert event["revised_lifecycle_multiplier"] == "1.25"
+    assert event["posted_cost_deduction_usd"] == "8.65756176"
+    assert event["revision"] == proof["revision"]
+    assert [c["sha256"] for c in event["billing_captures"]] == [
+        c["sha256"] for c in proof["billing_captures"]
+    ]
+    reopened = CampaignBudget(budget.path)
+    assert reopened.report()["hud"] == hud_before
+    report = reopened.report()["modal"]
+    assert report["provider_posted_usd"] == "8.65756176"
+    assert report["unreconciled_holds_usd"] == hold
+    assert report["conservative_liability_usd"] == "11.45287500"
+    with pytest.raises(ValueError, match="complete posted billing"):
+        reopened.reconcile_stage("wide", evidence_ref="not settlement")
+    reopened.record_billing("modal", "ap-gpu", total_usd="10.51503124", evidence_ref="late")
+    assert reopened.report()["modal"]["unreconciled_holds_usd"] == hold
+    assert reopened.report()["modal"]["conservative_liability_usd"] == "12.45287500"
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="already revised"):
+        revise_completed(reopened, path, hold)
+    with pytest.raises(ValueError, match="already refined/repriced"):
+        reprice_completed(reopened, tmp_path / "completed-proof.json", hold="11.34243824")
+    with pytest.raises(ValueError, match="schema"):
+        migrate_completed(reopened, path, hold)
+    assert budget.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("prior", ["none", "slack", "schema1"])
+def test_revision_requires_a_prior_exact_posted_cost_proof(tmp_path, prior):
+    budget, path, _, hold = revision_fixture(tmp_path, prior=prior)
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="prior exact-posted-cost"):
+        revise_completed(budget, path, hold)
+    assert budget.path.read_bytes() == before
+
+
+def test_revision_accepts_a_migrated_schema1_stage_once(tmp_path):
+    import hashlib
+    import json
+
+    budget, migrate_path, _, migrate_hold = migration_fixture(tmp_path)
+    migrate_completed(budget, migrate_path, migrate_hold)
+    old = json.loads(migrate_path.read_text())
+    event = json.loads(budget.path.read_text().splitlines()[-1])
+    _, path, proof, hold = revision_fixture(tmp_path / "second", prior="schema2")
+    proof["revision"] = {
+        "previous_event_sha256": event["sha256"],
+        "previous_evidence_sha256": hashlib.sha256(migrate_path.read_bytes()).hexdigest(),
+    }
+    proof["evidence"] = old["evidence"] + [
+        {
+            "path": str(migrate_path.resolve()),
+            "sha256": hashlib.sha256(migrate_path.read_bytes()).hexdigest(),
+        }
+    ]
+    path.write_text(json.dumps(proof))
+    revise_completed(budget, path, hold)
+    assert budget.report()["modal"]["unreconciled_holds_usd"] == hold
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "event_hash",
+        "proof_hash",
+        "previous_estimate",
+        "original",
+        "one_times",
+        "multiplier_not_lower",
+        "multiplier_below_one",
+        "revised_arithmetic",
+        "remaining_arithmetic",
+        "hold_arithmetic",
+        "zero_lag",
+        "hold_not_lower",
+        "ownership",
+        "termination",
+        "baseline",
+        "lower_bill",
+        "missing_prior_reference",
+        "single_capture",
+        "capture_before_buffer",
+        "captures_too_close",
+        "capture_hash",
+        "capture_total_differs",
+        "capture_missing_app",
+        "unknown_creation",
+        "extra_resource",
+        "schema",
+        "basis",
+    ],
+)
+def test_revision_rejects_changed_prior_evidence_or_inventory(tmp_path, mutation):
+    import hashlib
+    import json
+    from pathlib import Path
+
+    budget, path, proof, hold = revision_fixture(tmp_path)
+    digest = None
+    if mutation == "event_hash":
+        proof["revision"]["previous_event_sha256"] = "0" * 64
+    elif mutation == "proof_hash":
+        proof["revision"]["previous_evidence_sha256"] = "0" * 64
+    elif mutation == "previous_estimate":
+        proof["previous_conservative_lifecycle_estimate_usd"] = "17.5245"
+    elif mutation == "original":
+        proof["original_planned_estimate_usd"] = "109.62128731"
+    elif mutation == "one_times":
+        proof["one_times_lifetime_estimate_usd"] = "8.7622"
+    elif mutation == "multiplier_not_lower":
+        proof["revised_lifecycle_multiplier"] = "2"
+        proof["conservative_lifecycle_estimate_usd"] = "17.5246"
+        proof["remaining_lifecycle_allowance_usd"] = "8.86703824"
+        hold = "9.36703824"
+    elif mutation == "multiplier_below_one":
+        proof["revised_lifecycle_multiplier"] = "0.5"
+        proof["conservative_lifecycle_estimate_usd"] = "4.38115"
+        proof["remaining_lifecycle_allowance_usd"] = "0"
+        hold = "0.50"
+    elif mutation == "revised_arithmetic":
+        proof["conservative_lifecycle_estimate_usd"] = "10.95"
+    elif mutation == "remaining_arithmetic":
+        proof["remaining_lifecycle_allowance_usd"] = "2.2"
+    elif mutation == "hold_arithmetic":
+        hold = "2.80"
+    elif mutation == "zero_lag":
+        proof["unbilled_lag_usd"] = "0"
+        hold = "2.29531324"
+    elif mutation == "hold_not_lower":
+        proof["unbilled_lag_usd"] = "9.50"
+        hold = "11.79531324"
+    elif mutation == "ownership":
+        proof["resources"] = proof["resources"][:1]
+        for capture in proof["billing_captures"]:
+            capture["app_totals_usd"] = {"ap-gpu": capture["app_totals_usd"]["ap-gpu"]}
+    elif mutation == "termination":
+        proof["resources"][0]["terminated_at"] = "999"
+    elif mutation == "baseline":
+        proof["resources"][0]["baseline_usd"] = "0"
+    elif mutation == "lower_bill":
+        proof["resources"][0]["recorded_total_usd"] = "9"
+        for capture in proof["billing_captures"]:
+            capture["app_totals_usd"]["ap-gpu"] = "9"
+    elif mutation == "missing_prior_reference":
+        proof["evidence"] = proof["evidence"][:1]
+    elif mutation == "single_capture":
+        proof["billing_captures"] = proof["billing_captures"][:1]
+    elif mutation == "capture_before_buffer":
+        proof["billing_captures"][0]["captured_unix_s"] = "4000"
+    elif mutation == "captures_too_close":
+        proof["billing_captures"][1]["captured_unix_s"] = "8000"
+    elif mutation == "capture_hash":
+        proof["billing_captures"][1]["sha256"] = "0" * 64
+    elif mutation == "capture_total_differs":
+        proof["billing_captures"][1]["app_totals_usd"]["ap-gpu"] = "9.51503125"
+    elif mutation == "capture_missing_app":
+        del proof["billing_captures"][1]["app_totals_usd"]["ap-gateway"]
+    elif mutation == "unknown_creation":
+        proof["unknown_resource_creation"] = True
+    elif mutation == "extra_resource":
+        proof["resources"].append(dict(proof["resources"][0], resource_id="ap-other"))
+    elif mutation == "schema":
+        proof["schema_version"] = 2
+    elif mutation == "basis":
+        proof["liability_basis"] = "settled"
+    path.write_text(json.dumps(proof))
+    if mutation == "proof_hash":
+        pass
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError):
+        revise_completed(budget, path, hold, digest=digest)
+    assert budget.path.read_bytes() == before
+    assert Path(path).exists()
+
+
+def test_revision_rechecks_locked_current_billing(tmp_path):
+    budget, path, _, hold = revision_fixture(tmp_path)
+    budget.record_billing("modal", "ap-gpu", total_usd="9.6", evidence_ref="later bill")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="stale or differs"):
+        revise_completed(budget, path, hold)
+    assert budget.path.read_bytes() == before
+
+
+def test_revision_keeps_full_revised_allowance_when_billing_is_missing(tmp_path):
+    budget, path, _, hold = revision_fixture(tmp_path, post_modal_billing=False)
+    assert hold == "11.452875"  # No posted cost above baseline: full 1.25x allowance plus lag.
+    revise_completed(budget, path, hold)
+    report = budget.report()["modal"]
+    assert report["provider_posted_usd"] == "0"
+    assert report["unreconciled_holds_usd"] == hold
+
+
+def test_revision_rejects_a_settled_stage(tmp_path):
+    budget, path, _, hold = revision_fixture(tmp_path)
+    for identity in ("ap-gpu", "ap-gateway"):
+        budget.record_billing(
+            "modal", identity, total_usd=budget_total(budget, identity), evidence_ref="final", settled_through="1000"
+        )
+    budget.record_billing("hud", "instance-owned", total_usd="1.20", evidence_ref="final", settled_through="1000")
+    budget.reconcile_stage("wide", evidence_ref="settled")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="settled"):
+        revise_completed(budget, path, hold)
+    assert budget.path.read_bytes() == before
+
+
+def budget_total(budget, identity):
+    import json
+
+    total = "0"
+    for line in budget.path.read_text().splitlines():
+        row = json.loads(line)
+        if row.get("event") == "billing" and row["resource"] == f"modal:{identity}":
+            total = row["total_usd"]
+    return total

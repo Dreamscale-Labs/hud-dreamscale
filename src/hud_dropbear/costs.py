@@ -14,6 +14,12 @@ from pathlib import Path
 
 PROVIDERS = ("modal", "hud")
 PHASES = ("startup", "idle", "run", "cleanup")
+# A completed compute hold may be revised once, only from provider billing
+# captured at least this long after the last owned termination and again at
+# least this long later, with unchanged per-App totals. These are review
+# minimums, not a provider settlement boundary.
+REVISION_MIN_POST_TERMINATION_S = Decimal(3600)
+REVISION_MIN_CAPTURE_SEPARATION_S = Decimal(3600)
 
 
 class BudgetExceededError(RuntimeError):
@@ -146,6 +152,7 @@ def _state(rows):
                 "released": False,
                 "resources": [],
                 "refined_providers": [],
+                "hold_adjustments": {},
             }
         elif event == "resource":
             state["resources"][row["resource"]] = {
@@ -162,11 +169,18 @@ def _state(rows):
             state["resources"][row["resource"]]["terminated_at"] = row["terminated_at"]
         elif event == "reconcile":
             state["stages"][row["stage"]]["released"] = True
-        elif event in {"refine_hold", "reprice_completed_hold"}:
+        elif event in {
+            "refine_hold",
+            "reprice_completed_hold",
+            "migrate_completed_hold",
+            "revise_completed_hold",
+        }:
             stage = state["stages"][row["stage"]]
             stage["holds_usd"][row["provider"]] = row["hold_usd"]
             stage["lag_usd"][row["provider"]] = row["lag_usd"]
-            stage["refined_providers"].append(row["provider"])
+            if row["provider"] not in stage["refined_providers"]:
+                stage["refined_providers"].append(row["provider"])
+            stage["hold_adjustments"][row["provider"]] = row
     return state
 
 
@@ -470,7 +484,8 @@ class CampaignBudget:
         This is distinct from billing settlement and ordinary lag refinement. It
         retains original reservation history, all posted cost and a positive
         unpaid allowance. Late bills increase liability; they do not consume or
-        release this hold automatically. No stage may be reused or repriced twice.
+        release this hold automatically. No stage may be reused or repriced twice;
+        the explicit schema migration preserves the original estimate and margin.
 
         Schema 1 holds the full conservative estimate plus lag. Schema 2 holds
         only its remaining liability: max(estimate - exact posted cost above
@@ -481,6 +496,277 @@ class CampaignBudget:
         kinds require a separate lifetime model. Hashed operator evidence is
         reviewable provenance, not provider authentication or a charge ceiling.
         """
+        self._completed_compute_hold(
+            stage,
+            provider,
+            hold_usd=hold_usd,
+            evidence_path=evidence_path,
+            evidence_sha256=evidence_sha256,
+            migrate_schema1=False,
+        )
+
+    def migrate_completed_compute_hold_to_remaining_liability(
+        self, stage, provider, *, hold_usd, evidence_path, evidence_sha256
+    ):
+        """Deduct exact posted cost from one existing schema-1 completed proof.
+
+        This single migration preserves its estimate, positive margin, resource
+        ownership, termination and every original evidence reference. It binds
+        the prior ledger event and proof hashes; it cannot migrate a slack-only
+        refinement, an existing schema-2 proof, or a previously migrated stage.
+        All current billing and inventory checks still run under the ledger lock.
+        """
+        self._completed_compute_hold(
+            stage,
+            provider,
+            hold_usd=hold_usd,
+            evidence_path=evidence_path,
+            evidence_sha256=evidence_sha256,
+            migrate_schema1=True,
+        )
+
+    def revise_completed_compute_hold(
+        self, stage, provider, *, hold_usd, evidence_path, evidence_sha256
+    ):
+        """Second and final reviewed revision of one completed compute hold.
+
+        A schema-3 proof binds the exact prior schema-2 event (exact-posted-cost
+        repricing or its migration), preserves that proof's Apps, termination,
+        baselines, original planned estimate and every evidence reference, and
+        changes only the planning multiplier applied to the same frozen
+        one-times terminal lifetime estimate: 1 <= revised < previous. It needs
+        at least two hashed provider billing captures, each taken at least
+        REVISION_MIN_POST_TERMINATION_S after the last owned termination and
+        separated by at least REVISION_MIN_CAPTURE_SEPARATION_S, whose per-App
+        totals equal the totals recorded in this ledger. The hold becomes
+        max(revised allowance - exact posted cost, 0) plus a positive unbilled
+        lag and must decrease. Nothing is settled or released: later bills still
+        raise liability, and a stage cannot be revised twice. Hashed operator
+        evidence is reviewable provenance, not provider authentication.
+        """
+        if provider != "modal":
+            raise ValueError("Completed compute revision currently requires Modal Apps")
+        hold = amount(hold_usd)
+        path = Path(evidence_path).resolve()
+        raw = path.read_bytes()
+        if len(raw) > 1_048_576 or hashlib.sha256(raw).hexdigest() != evidence_sha256:
+            raise ValueError("Revision evidence digest or size differs")
+        proof = json.loads(raw)
+        if not isinstance(proof, dict):
+            raise ValueError("Revision evidence must be an object")
+        revision = proof.get("revision")
+        resources, references = proof.get("resources"), proof.get("evidence")
+        captures = proof.get("billing_captures")
+        if (
+            type(proof.get("schema_version")) is not int
+            or proof["schema_version"] != 3
+            or proof.get("purpose") != "completed_compute_lifetime_repricing"
+            or proof.get("stage") != stage
+            or proof.get("provider") != provider
+            or proof.get("resource_inventory_complete") is not True
+            or proof.get("unknown_resource_creation") is not False
+            or proof.get("additional_billable_resources") != []
+            or proof.get("lifecycle_evidence_complete") is not True
+            or proof.get("liability_basis") != "remaining_after_exact_posted_cost"
+            or not isinstance(proof.get("basis"), str)
+            or not proof["basis"].strip()
+            or not isinstance(revision, dict)
+            or set(revision) != {"previous_event_sha256", "previous_evidence_sha256"}
+            or any(
+                not isinstance(value, str) or len(value) != 64 for value in revision.values()
+            )
+            or not isinstance(resources, list)
+            or not resources
+            or not isinstance(references, list)
+            or not references
+            or not isinstance(captures, list)
+            or len(captures) < 2
+        ):
+            raise ValueError("Complete reviewed revision evidence is required")
+        by_id = {}
+        for resource in resources:
+            if (
+                not isinstance(resource, dict)
+                or set(resource)
+                != {"resource_id", "terminated_at", "baseline_usd", "recorded_total_usd"}
+                or not isinstance(resource["resource_id"], str)
+                or not resource["resource_id"].startswith("ap-")
+                or len(resource["resource_id"]) <= 3
+                or resource["resource_id"] in by_id
+            ):
+                raise ValueError("Exact unique compute App identities are required")
+            for name in ("terminated_at", "baseline_usd", "recorded_total_usd"):
+                amount(resource[name])
+            by_id[resource["resource_id"]] = resource
+        previous_estimate = amount(proof.get("previous_conservative_lifecycle_estimate_usd"))
+        previous_multiplier = amount(proof.get("previous_lifecycle_multiplier"))
+        one_times = amount(proof.get("one_times_lifetime_estimate_usd"))
+        multiplier = amount(proof.get("revised_lifecycle_multiplier"))
+        lifecycle = amount(proof.get("conservative_lifecycle_estimate_usd"))
+        posted_deduction = amount(proof.get("posted_cost_deduction_usd"))
+        remaining = amount(proof.get("remaining_lifecycle_allowance_usd"))
+        lag = amount(proof.get("unbilled_lag_usd"))
+        original = amount(proof.get("original_planned_estimate_usd"))
+        if (
+            one_times <= 0
+            or not Decimal(1) <= multiplier < previous_multiplier
+            or one_times * previous_multiplier != previous_estimate
+            or lifecycle != one_times * multiplier
+            or remaining != max(lifecycle - posted_deduction, Decimal(0))
+            or lag <= 0
+            or hold != remaining + lag
+        ):
+            raise ValueError(
+                "Revision must apply a lower multiplier of at least one to the frozen "
+                "terminal lifetime estimate, deduct exact posted cost and add positive lag"
+            )
+        for reference in references:
+            if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+                raise ValueError("Revision source reference is malformed")
+            source = Path(reference["path"])
+            if (
+                not source.is_absolute()
+                or hashlib.sha256(source.read_bytes()).hexdigest() != reference["sha256"]
+            ):
+                raise ValueError("Revision source evidence differs")
+        last_termination = max(amount(resource["terminated_at"]) for resource in by_id.values())
+        captured_at = []
+        for capture in captures:
+            if not isinstance(capture, dict) or set(capture) != {
+                "path",
+                "sha256",
+                "captured_unix_s",
+                "app_totals_usd",
+            }:
+                raise ValueError("Billing capture reference is malformed")
+            source = Path(capture["path"])
+            if (
+                not source.is_absolute()
+                or hashlib.sha256(source.read_bytes()).hexdigest() != capture["sha256"]
+            ):
+                raise ValueError("Billing capture evidence differs")
+            captured = amount(capture["captured_unix_s"])
+            if captured < last_termination + REVISION_MIN_POST_TERMINATION_S:
+                raise ValueError("Billing captures must follow the last termination by the buffer")
+            totals = capture["app_totals_usd"]
+            if not isinstance(totals, dict) or any(
+                identity not in totals or amount(totals[identity]) != amount(row["recorded_total_usd"])
+                for identity, row in by_id.items()
+            ):
+                raise ValueError("Every billing capture must show the recorded total for each App")
+            captured_at.append(captured)
+        if max(captured_at) - min(captured_at) < REVISION_MIN_CAPTURE_SEPARATION_S:
+            raise ValueError("Billing captures must be separated by the review interval")
+        event = {
+            "event": "revise_completed_hold",
+            "stage": stage,
+            "provider": provider,
+            "hold_usd": str(hold),
+            "lag_usd": str(lag),
+            "conservative_lifecycle_estimate_usd": str(lifecycle),
+            "previous_conservative_lifecycle_estimate_usd": str(previous_estimate),
+            "previous_lifecycle_multiplier": str(previous_multiplier),
+            "one_times_lifetime_estimate_usd": str(one_times),
+            "revised_lifecycle_multiplier": str(multiplier),
+            "liability_basis": proof["liability_basis"],
+            "posted_cost_deduction_usd": str(posted_deduction),
+            "remaining_lifecycle_allowance_usd": str(remaining),
+            "resource_ids": sorted(by_id),
+            "revision": dict(revision),
+            "billing_captures": [dict(capture) for capture in captures],
+            "evidence_ref": str(path),
+            "evidence_sha256": evidence_sha256,
+            "proof": proof,
+        }
+
+        def validate(state):
+            row = state["stages"].get(stage)
+            prior = None if row is None else row["hold_adjustments"].get(provider)
+            if (
+                row is None
+                or row["released"]
+                or (prior is not None and prior.get("event") == "revise_completed_hold")
+            ):
+                raise ValueError("Stage is missing, settled or already revised")
+            old = {} if prior is None else prior.get("proof", {})
+            if (
+                prior is None
+                or prior.get("event") not in {"reprice_completed_hold", "migrate_completed_hold"}
+                or old.get("schema_version") != 2
+            ):
+                raise ValueError("Revision requires a prior exact-posted-cost completed proof")
+            if (
+                revision["previous_event_sha256"] != prior.get("sha256")
+                or revision["previous_evidence_sha256"] != prior.get("evidence_sha256")
+            ):
+                raise ValueError("Revision must bind the exact prior event and proof")
+            if previous_estimate != amount(
+                old["conservative_lifecycle_estimate_usd"]
+            ) or original != amount(old["original_planned_estimate_usd"]):
+                raise ValueError("Revision must preserve the prior estimate and original plan")
+            if amount(row["holds_usd"][provider]) != amount(prior["hold_usd"]):
+                raise ValueError("Prior hold differs from the ledger")
+            required = {(ref["path"], ref["sha256"]) for ref in old["evidence"]} | {
+                (prior["evidence_ref"], prior["evidence_sha256"])
+            }
+            if not required <= {(ref["path"], ref["sha256"]) for ref in references}:
+                raise ValueError("Revision must retain every prior evidence reference")
+            old_resources = {r["resource_id"]: r for r in old["resources"]}
+            if set(old_resources) != set(by_id):
+                raise ValueError("Revision must preserve exact prior App ownership")
+            for identity, resource in by_id.items():
+                old_resource = old_resources[identity]
+                if any(
+                    amount(resource[key]) != amount(old_resource[key])
+                    for key in ("terminated_at", "baseline_usd")
+                ) or amount(resource["recorded_total_usd"]) < amount(
+                    old_resource["recorded_total_usd"]
+                ):
+                    raise ValueError("Revision must preserve termination and billing history")
+            bound = [state["resources"][key] for key in row["resources"]]
+            if any(r["terminated_at"] is None for r in bound):
+                raise ValueError("All bound resources must be confirmed terminated")
+            actual = {r["resource"].split(":", 1)[1]: r for r in bound if r["provider"] == provider}
+            if set(actual) != set(by_id):
+                raise ValueError("Revision proof must match every exact bound App")
+            if any(
+                set(other["resources"]) & set(row["resources"])
+                for key, other in state["stages"].items()
+                if key != stage
+            ):
+                raise ValueError("Revised resources cannot be shared with another stage")
+            for identity, resource in actual.items():
+                observed = by_id[identity]
+                for proof_key, state_key in (
+                    ("terminated_at", "terminated_at"),
+                    ("baseline_usd", "baseline_usd"),
+                    ("recorded_total_usd", "total_usd"),
+                ):
+                    if amount(observed[proof_key]) != amount(resource[state_key]):
+                        raise ValueError(
+                            "Revision proof is stale or differs from resource accounting"
+                        )
+            posted = sum(
+                (
+                    amount(resource["total_usd"]) - amount(resource["baseline_usd"])
+                    for resource in actual.values()
+                ),
+                Decimal(0),
+            )
+            if posted_deduction != posted:
+                raise ValueError("Deduction must match exact attributable posted cost")
+            floor = sum(map(amount, row["estimate"]["estimated_usd"][provider].values()))
+            previous = amount(row["holds_usd"][provider])
+            if original != floor or not hold < previous:
+                raise ValueError("Original estimate must match and revised hold must decrease")
+            event["previous_hold_usd"] = str(previous)
+
+        self._append(event, validate)
+
+
+    def _completed_compute_hold(
+        self, stage, provider, *, hold_usd, evidence_path, evidence_sha256, migrate_schema1
+    ):
         if provider != "modal":
             raise ValueError("Completed compute repricing currently requires Modal Apps")
         hold = amount(hold_usd)
@@ -491,6 +777,16 @@ class CampaignBudget:
         proof = json.loads(raw)
         if not isinstance(proof, dict):
             raise ValueError("Lifecycle evidence must be an object")
+        migration = proof.get("migration")
+        if migrate_schema1:
+            if (
+                proof.get("schema_version") != 2
+                or not isinstance(migration, dict)
+                or set(migration) != {"previous_event_sha256", "previous_evidence_sha256"}
+            ):
+                raise ValueError("Migration requires a schema-2 proof bound to its prior event")
+        elif migration is not None:
+            raise ValueError("Use the explicit completed-hold schema migration")
         resources, references = proof.get("resources"), proof.get("evidence")
         if (
             type(proof.get("schema_version")) is not int
@@ -551,7 +847,7 @@ class CampaignBudget:
             ):
                 raise ValueError("Lifecycle source evidence differs")
         event = {
-            "event": "reprice_completed_hold",
+            "event": "migrate_completed_hold" if migrate_schema1 else "reprice_completed_hold",
             "stage": stage,
             "provider": provider,
             "hold_usd": str(hold),
@@ -571,7 +867,46 @@ class CampaignBudget:
 
         def validate(state):
             row = state["stages"].get(stage)
-            if row is None or row["released"] or provider in row["refined_providers"]:
+            if row is None or row["released"]:
+                raise ValueError("Stage is missing, settled or already refined/repriced")
+            if migrate_schema1:
+                prior = row["hold_adjustments"].get(provider, {})
+                old = prior.get("proof", {})
+                if (
+                    prior.get("event") != "reprice_completed_hold"
+                    or old.get("schema_version") != 1
+                    or migration["previous_event_sha256"] != prior.get("sha256")
+                    or migration["previous_evidence_sha256"] != prior.get("evidence_sha256")
+                ):
+                    raise ValueError("Migration requires the exact unmigrated schema-1 event")
+                for key in (
+                    "conservative_lifecycle_estimate_usd",
+                    "unbilled_lag_usd",
+                    "original_planned_estimate_usd",
+                ):
+                    if amount(proof[key]) != amount(old[key]):
+                        raise ValueError("Migration must preserve the estimate and margin")
+                if amount(row["holds_usd"][provider]) != lifecycle + lag:
+                    raise ValueError("Prior schema-1 hold differs from the frozen allowance")
+                required = {(ref["path"], ref["sha256"]) for ref in old["evidence"]} | {
+                    (prior["evidence_ref"], prior["evidence_sha256"])
+                }
+                if not required <= {(ref["path"], ref["sha256"]) for ref in references}:
+                    raise ValueError("Migration must retain every prior evidence reference")
+                old_resources = {r["resource_id"]: r for r in old["resources"]}
+                if set(old_resources) != set(by_id):
+                    raise ValueError("Migration must preserve exact prior App ownership")
+                for identity, resource in by_id.items():
+                    old_resource = old_resources[identity]
+                    if any(
+                        amount(resource[key]) != amount(old_resource[key])
+                        for key in ("terminated_at", "baseline_usd")
+                    ) or amount(resource["recorded_total_usd"]) < amount(
+                        old_resource["recorded_total_usd"]
+                    ):
+                        raise ValueError("Migration must preserve termination and billing history")
+                event["migration"] = dict(migration)
+            elif provider in row["refined_providers"]:
                 raise ValueError("Stage is missing, settled or already refined/repriced")
             bound = [state["resources"][key] for key in row["resources"]]
             if any(r["terminated_at"] is None for r in bound):

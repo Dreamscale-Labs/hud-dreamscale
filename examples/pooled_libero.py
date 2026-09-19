@@ -3,13 +3,16 @@
 Configure HUD_API_KEY and the Dropbear SDK credentials, then run this file with
 --registry-id selecting a dedicated, otherwise idle HUD environment registry,
 --build-id, --expected-release-id and --expected-release-sha256.
-For the current development qualification service, an operator must first
-provision a funded GPU app and matching account grant. This example owns one
-cohort and stops that app on exit. A subsequent run needs operator reprovisioning;
-credentials or a new creation key do not recreate the stopped app. Episodes
-within this run reuse its open provider and remain billable until cleanup.
-The operator separately owns funding and cleanup of the CPU gateway/sweeper app;
-stopping this example's inference deployment does not stop that app.
+An operator must first provision the funded service and matching account grant.
+This example owns one cohort and stops its inference deployment on exit.
+With an ongoing grant, normal stop releases its GPU workers and retains the
+service apps for another deployment; finite grants still terminate the GPU app
+and require operator reprovisioning. Ongoing service reuse and renewal are under
+live development qualification; earlier finite results do not establish them.
+Episodes reuse the open provider and remain billable until deployment cleanup.
+The operator separately owns service app funding and final retirement, including
+the CPU gateway/sweeper app. Use the approved SDK source checkout while the
+published package lacks the pooled API; see docs/pooled-inference.md.
 For a saved cohort manifest, timing report and videos, use:
     hud-dropbear pooled --runtime hud --concurrency 8 --registry-id YOUR_REGISTRY_ID
         --build-id YOUR_BUILD_ID --expected-release-id YOUR_RELEASE_ID

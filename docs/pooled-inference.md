@@ -70,19 +70,23 @@ credentials outside this repository using their normal SDK configuration.
 The CLI accepts `DROPBEAR_API_KEY` from the environment, with saved SDK
 configuration as the fallback; credentials are never written to run evidence.
 
-The finite qualification campaign above requires an operator to provision a
-funded GPU app and matching finite account grant before each owned run.
+An operator first provisions the funded service and matching account grant.
 Credentials alone do not provision this capacity. The CLI creates one owned
-inference deployment and stops it when the run exits; in finite mode that stop
-terminates the granted GPU app. Another finite run therefore needs a fresh app
-and grant. A new creation key or unused grant time does not recreate a stopped app.
+inference deployment and stops it when the run exits. With an ongoing grant,
+normal stop releases that deployment's GPU workers and retains the service apps.
+A later deployment with a new creation key can use those same apps, subject to
+the unchanged account grant and cumulative funding cap.
 
-The newly merged Dropbear server source also supports ongoing grants and reusable
-service apps. In that mode, stopping a deployment releases its workers while
-leaving the service apps available for a later deployment; the control plane
-renews a funded numeric expiry. Deployment and live qualification of this source
-are still pending. The earlier finite results do not establish ongoing renewal,
-worker rollover or service reuse.
+The combined server source supporting this lifecycle is deployed in development;
+live qualification of ongoing renewal, worker rollover and stop/recreate reuse is
+still pending. The earlier finite results do not establish those behaviors, and
+they are not a production qualification or a published SDK release.
+
+The historical qualification campaign used finite grants. Finite mode still
+terminates the granted GPU app on stop, so another finite run needs operator
+reprovisioning and a matching fresh grant. A new creation key or unused grant time
+does not recreate a stopped app. Do not change an active finite grant into an
+ongoing grant in place.
 
 `PooledProvider` checks deployment authority in the background, at most 60 seconds
 apart and earlier near expiry. It accepts a new horizon only from authenticated
@@ -93,10 +97,11 @@ checks do not add status requests to ordinary inference calls or renew funding
 themselves. The finite campaign runner still enforces its original fixed deadline
 and budget; it does not become an ongoing runner through provider status refresh.
 
-The operator also owns the separately billable CPU gateway/sweeper app. Stopping
-the inference deployment does not stop that app: a campaign-owned gateway needs
-explicit operator teardown, while a shared gateway needs its own funded lifetime
-and cleanup owner. Do not stop a shared gateway belonging to another run.
+Normal deployment stop and final service app retirement are separate operations.
+The operator owns the retained service apps and the separately billable CPU
+gateway/sweeper app. Campaign-owned apps need explicit final retirement; shared
+apps need their own funded lifetime and cleanup owner. Do not stop a shared app
+belonging to another run.
 
 ```bash
 .venv/bin/hud-dropbear pooled \
@@ -290,10 +295,11 @@ the control plane's renewed authority; the operator must fund that service
 lifetime separately.
 
 The CLI still owns one cohort per invocation and has no cross-cohort mode.
-The finite qualification protocol uses fresh provisioned apps and grants for
-independent cold trials: three 8-wide cold trials need three fresh apps, even
-though warm 8/3/1 cohorts can share one allocation. This protocol is distinct
-from the newly merged ongoing service lifecycle.
+The historical finite qualification protocol provisioned fresh apps and grants
+for its three independent eight-lane cold trials. Ongoing grants allow a new
+deployment after normal stop without replacing the service apps. A cold-start
+claim must still establish a fresh worker initialization; reusing an open
+provider across 8/3/1 cohorts measures warm reuse instead.
 
 ## Evidence and timing
 
@@ -313,7 +319,10 @@ prove GPU worker count, batch size or utilization.
 Timing distinguishes lease acquisition, control readiness, task setup, first usable
 model input, first executed action, inference deployment readiness, per-episode
 first inference, steady successful inference, and failed/cancelled attempts. Client
-encoding includes queue wait; SDK POST time excludes outer journaling and recovery.
+encoding includes queue wait. The legacy `sdk_post_attempts_s` field measures the
+awaited SDK `predict()` call, including connection discovery/refresh, JSON
+serialization and response handling. It excludes outer encoding, journaling and
+recovery; it is not an isolated HTTP POST RTT measurement.
 The existing journal's lock wait, write, flush and fsync are timed separately
 before submission and at terminal persistence. These spans overlap the outer
 model call; durability has not been removed to improve latency numbers.
