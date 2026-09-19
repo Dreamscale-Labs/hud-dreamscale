@@ -41,6 +41,8 @@ class RuntimePool:
         startup_timeout=900,
         cleanup_timeout=60,
         connector=None,
+        lane_ready_timeout=None,
+        lane_ready_attempts=3,
     ):
         if type(concurrency) is not int or not 1 <= concurrency <= 64:
             raise ValueError("concurrency must be between 1 and 64")
@@ -50,10 +52,25 @@ class RuntimePool:
             or startup_timeout <= 0
         ):
             raise ValueError("startup_timeout must be a positive finite number")
+        if lane_ready_timeout is None:
+            lane_ready_timeout = min(startup_timeout, 300)
+        if (
+            type(lane_ready_timeout) not in (int, float)
+            or not math.isfinite(lane_ready_timeout)
+            or not 0 < lane_ready_timeout <= startup_timeout
+        ):
+            raise ValueError("lane_ready_timeout must be positive and within startup_timeout")
+        if type(lane_ready_attempts) is not int or lane_ready_attempts < 1:
+            raise ValueError("lane_ready_attempts must be a positive integer")
         self.provider = provider
         self.concurrency = concurrency
         self.emit = emit or (lambda event, **fields: None)
         self.startup_timeout = startup_timeout
+        # A leased simulator whose control connection never becomes ready is
+        # released and replaced, a bounded number of times, inside the overall
+        # startup bound; the remote's own readiness bound is set to the same value.
+        self.lane_ready_timeout = lane_ready_timeout
+        self.lane_ready_attempts = lane_ready_attempts
         self.cleanup_timeout = cleanup_timeout
         self._connector = connector or connect
         self.tasks = list(tasks)
@@ -91,62 +108,110 @@ class RuntimePool:
 
         async def open_lane(slot):
             started = time.monotonic()
-            phase = "runtime_lease"
-            try:
-                self.emit("simulator_starting", lane_id=slot)
-                runtime = await self._owners[slot].enter_async_context(
-                    self.provider(self._representatives[slot])
-                )
-                # HUD connect prioritizes Runtime.params over its timeout keyword.
-                # Copy the public descriptor so the pool's bound takes effect without
-                # changing the provider's descriptor or its ownership/cleanup context.
-                runtime = replace(
-                    runtime, params={**runtime.params, "ready_timeout": self.startup_timeout}
-                )
-                self.emit(
-                    "runtime_lease_acquired",
-                    lane_id=slot,
-                    duration_s=time.monotonic() - started,
-                    runtime_session_id=runtime.params.get("session_id"),
-                    ready_timeout_s=self.startup_timeout,
-                )
-                # A lease can precede remote readiness. Hello initializes control
-                # without starting a task or claiming a robot slot.
-                phase = "control_hello"
-                connect_started = time.monotonic()
-                async with self._connector(runtime, ready_timeout=self.startup_timeout) as client:
-                    phase = "control_identity"
-                    if client.manifest.server_info.name != self._representatives[slot].env:
-                        raise ValueError("Runtime initialized the wrong HUD environment")
-                fields = dict(
-                    lane_id=slot,
-                    duration_s=time.monotonic() - started,
-                    control_connect_s=time.monotonic() - connect_started,
-                    runtime_session_id=runtime.params.get("session_id"),
-                    boundary="control_ready",
-                )
-                self.emit("simulator_control_ready", **fields)
-                self.emit("simulator_acquired", **fields)  # Saved timing reader compatibility.
-                return Lane(slot, runtime)
-            except BaseException as exc:
-                event = (
-                    "simulator_startup_cancelled"
-                    if isinstance(exc, asyncio.CancelledError)
-                    else "simulator_startup_failed"
-                )
+            self.emit("simulator_starting", lane_id=slot)
+            attempt = 0
+            while True:
+                attempt += 1
+                phase = "runtime_lease"
+                attempt_started = time.monotonic()
+                # Each attempt owns its lease in a fresh stack so a released
+                # simulator never lingers on the lane's final owner.
+                owner = AsyncExitStack()
+                await owner.__aenter__()
+                self._owners[slot] = owner
                 try:
-                    self.emit(
-                        event,
-                        lane_id=slot,
-                        phase=phase,
-                        duration_s=time.monotonic() - started,
-                        startup_timeout_s=self.startup_timeout,
-                        error_type=type(exc).__name__[:64],
+                    runtime = await owner.enter_async_context(
+                        self.provider(self._representatives[slot])
                     )
-                except Exception:
-                    # Preserve the original failure and unconditional paid teardown.
-                    pass
-                raise
+                    # HUD connect prioritizes Runtime.params over its timeout keyword.
+                    # Copy the public descriptor so the pool's bound takes effect without
+                    # changing the provider's descriptor or its ownership/cleanup context.
+                    runtime = replace(
+                        runtime,
+                        params={**runtime.params, "ready_timeout": self.lane_ready_timeout},
+                    )
+                    self.emit(
+                        "runtime_lease_acquired",
+                        lane_id=slot,
+                        attempt=attempt,
+                        duration_s=time.monotonic() - attempt_started,
+                        runtime_session_id=runtime.params.get("session_id"),
+                        ready_timeout_s=self.lane_ready_timeout,
+                    )
+                    # A lease can precede remote readiness. Hello initializes control
+                    # without starting a task or claiming a robot slot.
+                    phase = "control_hello"
+                    connect_started = time.monotonic()
+                    async with asyncio.timeout(self.lane_ready_timeout):
+                        async with self._connector(
+                            runtime, ready_timeout=self.lane_ready_timeout
+                        ) as client:
+                            phase = "control_identity"
+                            if (
+                                client.manifest.server_info.name
+                                != self._representatives[slot].env
+                            ):
+                                raise ValueError("Runtime initialized the wrong HUD environment")
+                    fields = dict(
+                        lane_id=slot,
+                        duration_s=time.monotonic() - started,
+                        control_connect_s=time.monotonic() - connect_started,
+                        runtime_session_id=runtime.params.get("session_id"),
+                        boundary="control_ready",
+                        attempts=attempt,
+                    )
+                    self.emit("simulator_control_ready", **fields)
+                    self.emit("simulator_acquired", **fields)  # Saved timing reader compat.
+                    return Lane(slot, runtime)
+                except BaseException as exc:
+                    elapsed = time.monotonic() - started
+                    retry = (
+                        not isinstance(exc, (asyncio.CancelledError, ValueError))
+                        and phase != "control_identity"
+                        and attempt < self.lane_ready_attempts
+                        and elapsed + self.lane_ready_timeout <= self.startup_timeout
+                    )
+                    if retry:
+                        # Release the unready simulator before leasing a replacement;
+                        # a release failure is not retried into a second paid lease.
+                        try:
+                            await owner.aclose()
+                        except Exception as release_exc:
+                            retry = False
+                            exc = release_exc
+                    if retry:
+                        try:
+                            self.emit(
+                                "simulator_control_retry",
+                                lane_id=slot,
+                                attempt=attempt,
+                                phase=phase,
+                                duration_s=time.monotonic() - attempt_started,
+                                lane_ready_timeout_s=self.lane_ready_timeout,
+                                error_type=type(exc).__name__[:64],
+                            )
+                        except Exception:
+                            pass
+                        continue
+                    event = (
+                        "simulator_startup_cancelled"
+                        if isinstance(exc, asyncio.CancelledError)
+                        else "simulator_startup_failed"
+                    )
+                    try:
+                        self.emit(
+                            event,
+                            lane_id=slot,
+                            phase=phase,
+                            attempt=attempt,
+                            duration_s=elapsed,
+                            startup_timeout_s=self.startup_timeout,
+                            error_type=type(exc).__name__[:64],
+                        )
+                    except Exception:
+                        # Preserve the original failure and unconditional paid teardown.
+                        pass
+                    raise exc
 
         pending = [asyncio.create_task(open_lane(i)) for i in range(self.concurrency)]
         try:

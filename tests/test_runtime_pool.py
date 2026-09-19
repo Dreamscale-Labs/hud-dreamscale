@@ -402,7 +402,12 @@ async def test_startup_error_telemetry_is_bounded_and_cannot_suppress_cleanup():
 
     with pytest.raises(EOFError, match="SECRET"):
         async with RuntimePool(
-            provider, cohort_tasks(1), concurrency=1, connector=failing_connection, emit=emit,
+            provider,
+            cohort_tasks(1),
+            concurrency=1,
+            connector=failing_connection,
+            emit=emit,
+            lane_ready_attempts=1,
         ):
             pass
     row = next(e for e in events if e["event"] == "simulator_startup_failed")
@@ -410,3 +415,131 @@ async def test_startup_error_telemetry_is_bounded_and_cannot_suppress_cleanup():
     assert row["duration_s"] >= 0 and row["startup_timeout_s"] == 900
     assert "SECRET" not in json.dumps(events) and "private.invalid" not in json.dumps(events)
     assert closed == [True]
+
+
+async def test_unready_lane_is_released_and_replaced_within_bounded_attempts():
+    """A leased simulator whose control never becomes ready is released, then replaced."""
+    events, opened, closed = [], [], []
+    leases = {0: 0, 1: 0}
+
+    @asynccontextmanager
+    async def provider(task):
+        slot = task.columns["lane_id"]
+        leases[slot] += 1
+        name = f"tcp://lane-{slot}-{leases[slot]}"
+        opened.append(name)
+        try:
+            yield Runtime(name, params={"session_id": name})
+        finally:
+            closed.append(name)
+
+    @asynccontextmanager
+    async def connector(runtime, **kwargs):
+        if runtime.url == "tcp://lane-1-1":
+            await asyncio.sleep(10)  # never becomes ready inside the lane bound
+        yield SimpleNamespace(
+            manifest=SimpleNamespace(server_info=SimpleNamespace(name="dropbear-libero-pooled"))
+        )
+
+    async with RuntimePool(
+        provider,
+        cohort_tasks(2),
+        concurrency=2,
+        connector=connector,
+        emit=lambda event, **fields: events.append({"event": event, **fields}),
+        startup_timeout=5,
+        lane_ready_timeout=0.05,
+        lane_ready_attempts=2,
+    ) as pool:
+        assert [lane.runtime.url for lane in pool.lanes] == ["tcp://lane-0-1", "tcp://lane-1-2"]
+        assert closed == ["tcp://lane-1-1"]  # the unready lease was released before replacement
+    assert sorted(closed) == sorted(opened) == ["tcp://lane-0-1", "tcp://lane-1-1", "tcp://lane-1-2"]
+    retry = [e for e in events if e["event"] == "simulator_control_retry"]
+    assert len(retry) == 1 and retry[0]["lane_id"] == 1 and retry[0]["attempt"] == 1
+    assert retry[0]["phase"] == "control_hello" and retry[0]["error_type"] == "TimeoutError"
+    ready = {e["lane_id"]: e["attempts"] for e in events if e["event"] == "simulator_control_ready"}
+    assert ready == {0: 1, 1: 2}
+    assert [e["event"] for e in events if e["lane_id"] == 1 and e["event"] == "simulator_starting"] == [
+        "simulator_starting"
+    ]
+
+
+async def test_lane_readiness_retries_are_bounded_and_then_fail_closed():
+    events, closed = [], []
+
+    @asynccontextmanager
+    async def provider(task):
+        try:
+            yield Runtime(f"tcp://lane-{task.columns['lane_id']}-{len(closed)}")
+        finally:
+            closed.append(task.columns["lane_id"])
+
+    @asynccontextmanager
+    async def never_ready(runtime, **kwargs):
+        await asyncio.sleep(10)
+        yield
+
+    with pytest.raises(TimeoutError):
+        async with RuntimePool(
+            provider,
+            cohort_tasks(1),
+            concurrency=1,
+            connector=never_ready,
+            emit=lambda event, **fields: events.append({"event": event, **fields}),
+            startup_timeout=5,
+            lane_ready_timeout=0.05,
+            lane_ready_attempts=2,
+        ):
+            pytest.fail("Startup should fail")
+    assert closed == [0, 0]
+    lifecycle = [
+        e["event"]
+        for e in events
+        if e["event"] in ("simulator_starting", "simulator_control_retry", "simulator_startup_failed")
+    ]
+    assert lifecycle == ["simulator_starting", "simulator_control_retry", "simulator_startup_failed"]
+    failed = next(e for e in events if e["event"] == "simulator_startup_failed")
+    assert failed["phase"] == "control_hello" and failed["attempt"] == 2
+
+
+async def test_identity_mismatch_and_cancellation_are_never_retried():
+    events, closed = [], []
+
+    @asynccontextmanager
+    async def provider(task):
+        try:
+            yield Runtime("tcp://lane-0")
+        finally:
+            closed.append(True)
+
+    @asynccontextmanager
+    async def wrong_environment(runtime, **kwargs):
+        yield SimpleNamespace(manifest=SimpleNamespace(server_info=SimpleNamespace(name="other")))
+
+    with pytest.raises(ValueError, match="wrong HUD environment"):
+        async with RuntimePool(
+            provider,
+            cohort_tasks(1),
+            concurrency=1,
+            connector=wrong_environment,
+            emit=lambda event, **fields: events.append({"event": event, **fields}),
+            lane_ready_attempts=3,
+        ):
+            pytest.fail("Startup should fail")
+    assert closed == [True]
+    assert not [e for e in events if e["event"] == "simulator_control_retry"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"lane_ready_timeout": 0},
+        {"lane_ready_timeout": 1000},
+        {"lane_ready_timeout": float("inf")},
+        {"lane_ready_attempts": 0},
+        {"lane_ready_attempts": 1.5},
+    ],
+)
+def test_lane_readiness_parameters_are_validated(kwargs):
+    with pytest.raises(ValueError):
+        RuntimePool(lambda task: None, cohort_tasks(1), concurrency=1, **kwargs)
