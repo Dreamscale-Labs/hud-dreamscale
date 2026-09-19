@@ -5,18 +5,25 @@ pooled inference API. Configure a ready-made agent; HUD still executes actions,
 grades tasks and records traces. Dropbear owns native model preprocessing, GPU
 batching and inference. The client needs no GPU or model weights.
 
-**Qualification status (18 September 2026):** two eight-lane HUD-hosted
-cohorts each passed all 16 episodes, and a three-lane cohort passed all six,
-with zero episode integration errors, verified grades and both camera videos.
-A single-lane attempt achieved five successes and one transport/admission error;
-it failed acceptance and remains recorded. The latest 64-lane cohort recorded
-78 successes across all 128 planned attempts (60.9375%), but its 50 integration
-errors failed acceptance. Its manifest retains every attempt; 254 camera videos
-decoded, with two streams absent from an episode that failed its handshake before
-receiving observations. The subsequent 32-lane cohort did not start. These results
-do not qualify every width. The older
-six-episode demo uses the separate exclusive-session API. Local contract tests
-are not GPU capacity evidence.
+**Qualification status (19 September 2026):** on the current reusable-service
+release, HUD-hosted cohorts passed with zero episode integration errors and
+100% simulator success at widths 8 (16/16), 3 (6/6), 1 (6/6, all six fixed
+task/initial-state pairs), 32 (64/64) and 9 (18/18); every planned row ran and
+is retained, every job was re-read through the HUD Platform API, and the exact
+provider Apps were confirmed stopped afterwards. A 33-lane cohort reached 57/66
+but failed acceptance on nine episodes fenced when the operator grant's cost cap
+was sized too tightly for the control plane's rolling renewal reserve; that is
+an operator funding error, not a policy or HUD defect, and it is recorded as a
+failed attempt. Widths 64 and 63 have not been run on this release. The dev
+workers for these results were placed on GCP `us-west4` under an explicit,
+dev-only relaxation of the AWS cloud pin after AWS `us-west` H100 capacity was
+unavailable for several hours; the region selector and the model contract were
+unchanged, and each worker records its actual placement. Earlier finite-release
+results (two eight-lane passes, a three-lane pass, a failed one-lane attempt and
+a failed 64-lane attempt with 78/128 successes and 50 integration errors) remain
+recorded but do not qualify this release. The older six-episode demo uses the
+separate exclusive-session API. Local contract tests are not GPU capacity
+evidence.
 
 ## Installation during development
 
