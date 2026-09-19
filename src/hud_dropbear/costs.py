@@ -167,7 +167,7 @@ def _state(rows):
             state["resources"][row["resource"]].update(row)
         elif event == "terminated":
             state["resources"][row["resource"]]["terminated_at"] = row["terminated_at"]
-        elif event == "reconcile":
+        elif event in {"reconcile", "release_superseded"}:
             state["stages"][row["stage"]]["released"] = True
         elif event in {
             "refine_hold",
@@ -951,6 +951,69 @@ class CampaignBudget:
             if original != floor or not hold < previous:
                 raise ValueError("Original estimate must match and completed hold must decrease")
             event["previous_hold_usd"] = str(previous)
+
+        self._append(event, validate)
+
+    def release_superseded_reservation(
+        self, stage, *, superseded_by, evidence_path, evidence_sha256
+    ):
+        """Release a resource-less correction reservation once the stage it corrected settles.
+
+        A correction stage holds extra allowance for another stage's compute
+        without binding resources of its own, so ordinary reconciliation can
+        never release it. It is released only when the corrected stage has been
+        reconciled from complete posted billing, and only with a hashed reviewed
+        proof that names both stages and the correction stage's own reservation
+        evidence by path and digest. Posted spend is never touched.
+        """
+        proof_path = Path(evidence_path).resolve()
+        raw = proof_path.read_bytes()
+        if len(raw) > 1_048_576 or hashlib.sha256(raw).hexdigest() != evidence_sha256:
+            raise ValueError("Supersession evidence digest or size differs")
+        proof = json.loads(raw)
+        reference = proof.get("correction_evidence") if isinstance(proof, dict) else None
+        if (
+            not isinstance(proof, dict)
+            or proof.get("schema_version") != 1
+            or proof.get("purpose") != "superseded_correction_release"
+            or proof.get("stage") != stage
+            or proof.get("superseded_by") != superseded_by
+            or not stage
+            or not superseded_by
+            or stage == superseded_by
+            or not isinstance(proof.get("basis"), str)
+            or not proof["basis"].strip()
+            or not isinstance(reference, dict)
+            or set(reference) != {"path", "sha256"}
+        ):
+            raise ValueError("Reviewed supersession proof is missing or malformed")
+        correction = Path(reference["path"])
+        if (
+            not correction.is_absolute()
+            or hashlib.sha256(correction.read_bytes()).hexdigest() != reference["sha256"]
+        ):
+            raise ValueError("Referenced correction evidence differs")
+        event = {
+            "event": "release_superseded",
+            "stage": stage,
+            "superseded_by": superseded_by,
+            "evidence_ref": str(proof_path),
+            "evidence_sha256": evidence_sha256,
+            "proof": proof,
+        }
+
+        def validate(state):
+            row = state["stages"].get(stage)
+            target = state["stages"].get(superseded_by)
+            if row is None or row["released"]:
+                raise ValueError("Stage is missing or already released")
+            if row["resources"]:
+                raise ValueError("Only a reservation without bound resources can be superseded")
+            if Path(row["evidence_ref"]).resolve() != correction.resolve():
+                raise ValueError("Proof must reference the stage's own reservation evidence")
+            if target is None or not target["released"] or not target["resources"]:
+                raise ValueError("The superseding stage must be reconciled from bound resources")
+            event["released_usd"] = dict(row["holds_usd"])
 
         self._append(event, validate)
 

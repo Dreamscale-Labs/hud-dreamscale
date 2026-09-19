@@ -122,6 +122,130 @@ def test_incomplete_termination_or_billing_coverage_preserves_liability(
     assert Decimal(budget.report()["modal"]["unreconciled_holds_usd"]) == Decimal("0.464")
 
 
+def _correction_pair(tmp_path, *, target="eight"):
+    """A reconciled compute stage plus a resource-less correction reservation for it."""
+    import hashlib
+    import json
+
+    budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="200", hud_cap_usd="10")
+    reserve(budget)
+    resources(budget)
+    settle(budget)
+    correction_evidence = tmp_path / "correction.json"
+    correction_evidence.write_text(json.dumps({"stage_corrected": target, "correction_hold_usd": "3"}))
+    budget.reserve_stage(
+        "correction",
+        estimate={
+            "estimated_usd": {
+                "modal": {"startup": "0", "idle": "0", "run": "3", "cleanup": "0"},
+                "hud": {"startup": "0", "idle": "0", "run": "0", "cleanup": "0"},
+            }
+        },
+        modal_lag_usd="0",
+        hud_lag_usd="0",
+        evidence_ref=str(correction_evidence),
+    )
+    proof = {
+        "schema_version": 1,
+        "purpose": "superseded_correction_release",
+        "stage": "correction",
+        "superseded_by": target,
+        "basis": "The corrected stage reconciled from complete posted billing.",
+        "correction_evidence": {
+            "path": str(correction_evidence.resolve()),
+            "sha256": hashlib.sha256(correction_evidence.read_bytes()).hexdigest(),
+        },
+    }
+    proof_path = tmp_path / "release-proof.json"
+    proof_path.write_text(json.dumps(proof))
+    return budget, proof, proof_path
+
+
+def _release(budget, proof_path, *, stage="correction", superseded_by="eight"):
+    import hashlib
+
+    budget.release_superseded_reservation(
+        stage,
+        superseded_by=superseded_by,
+        evidence_path=proof_path,
+        evidence_sha256=hashlib.sha256(proof_path.read_bytes()).hexdigest(),
+    )
+
+
+def test_superseded_correction_releases_only_after_target_reconciles(tmp_path):
+    budget, proof, proof_path = _correction_pair(tmp_path)
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="must be reconciled"):
+        _release(budget, proof_path)
+    assert budget.path.read_bytes() == before
+    budget.reconcile_stage("eight", evidence_ref="final-provider-receipts")
+    assert Decimal(budget.report()["modal"]["unreconciled_holds_usd"]) == Decimal("3")
+    _release(budget, proof_path)
+    report = budget.report()
+    assert report["modal"]["unreconciled_holds_usd"] == "0"
+    assert report["modal"]["provider_posted_usd"] == "0.1"
+    with pytest.raises(ValueError, match="already released"):
+        _release(budget, proof_path)
+
+
+@pytest.mark.parametrize(
+    "mutation,message",
+    [
+        ({"stage": "eight"}, "malformed"),
+        ({"superseded_by": "correction"}, "malformed"),
+        ({"purpose": "other"}, "malformed"),
+        ({"basis": " "}, "malformed"),
+        ({"correction_evidence": {"path": "relative.json", "sha256": "0" * 64}}, "differs"),
+    ],
+)
+def test_superseded_release_rejects_bad_proofs(tmp_path, mutation, message):
+    import hashlib
+    import json
+
+    budget, proof, proof_path = _correction_pair(tmp_path)
+    budget.reconcile_stage("eight", evidence_ref="final-provider-receipts")
+    proof_path.write_text(json.dumps({**proof, **mutation}))
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match=message):
+        _release(budget, proof_path)
+    with pytest.raises(ValueError, match="digest"):
+        budget.release_superseded_reservation(
+            "correction",
+            superseded_by="eight",
+            evidence_path=proof_path,
+            evidence_sha256=hashlib.sha256(b"other").hexdigest(),
+        )
+    assert budget.path.read_bytes() == before
+
+
+def test_superseded_release_requires_resource_less_stage_and_matching_evidence(tmp_path):
+    import hashlib
+    import json
+
+    budget, proof, proof_path = _correction_pair(tmp_path)
+    budget.reconcile_stage("eight", evidence_ref="final-provider-receipts")
+    other = tmp_path / "other.json"
+    other.write_text("{}")
+    proof_path.write_text(
+        json.dumps(
+            {
+                **proof,
+                "correction_evidence": {
+                    "path": str(other.resolve()),
+                    "sha256": hashlib.sha256(other.read_bytes()).hexdigest(),
+                },
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="own reservation evidence"):
+        _release(budget, proof_path)
+    proof_path.write_text(json.dumps(proof))
+    budget.register_owned_resource("modal", "ap-extra", baseline_usd="0", evidence_ref="owned")
+    budget.bind_resource("correction", "modal", "ap-extra")
+    with pytest.raises(ValueError, match="without bound resources"):
+        _release(budget, proof_path)
+
+
 def test_complete_reconciliation_releases_hold_but_never_spend(tmp_path):
     budget = CampaignBudget.create(tmp_path / "cost.jsonl", modal_cap_usd="200", hud_cap_usd="10")
     reserve(budget)
