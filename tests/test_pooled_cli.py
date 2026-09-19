@@ -384,3 +384,13 @@ async def test_runner_writes_results_and_cleanup_on_normal_return(runtime, tmp_p
     receipts = [json.loads(line) for line in (tmp_path / "timings.jsonl").read_text().splitlines()]
     final = next(row for row in receipts if row["event"] == "job_result")
     assert final["demo_passed"] == result["demo_passed"] is False
+
+
+def test_default_executor_workers_scale_with_lanes():
+    from hud_dropbear.pooled_cli import default_executor_workers
+
+    assert default_executor_workers(1) == 32
+    assert default_executor_workers(8) == 48
+    assert default_executor_workers(64) == 272
+    with pytest.raises(ValueError):
+        default_executor_workers(0)

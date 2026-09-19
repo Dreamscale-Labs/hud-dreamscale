@@ -680,3 +680,29 @@ async def test_legacy_camera_size_is_rejected_before_post():
 def test_invalid_concurrency_is_rejected(concurrency):
     with pytest.raises(ValueError, match="concurrency"):
         PooledProvider(concurrency=concurrency)
+
+
+async def test_journal_checkpoints_do_not_queue_behind_a_saturated_default_executor(tmp_path):
+    """Recorder finalization and DNS share the default executor; journal writes must not."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    server = Server()
+    server.journal = tmp_path / "requests.jsonl"
+    loop = asyncio.get_running_loop()
+    release = threading.Event()
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="saturated")
+    loop.set_default_executor(executor)
+    blockers = [loop.run_in_executor(None, release.wait) for _ in range(2)]
+    try:
+        async with server.provider(concurrency=1, journal_path=server.journal) as provider:
+            assert provider._journal_executor is not None
+            started = asyncio.get_running_loop().time()
+            async with asyncio.timeout(5):
+                await provider._checkpoint("probe", detail="isolated")
+            assert asyncio.get_running_loop().time() - started < 2
+        assert "isolated" in server.journal.read_text()
+    finally:
+        release.set()
+        await asyncio.gather(*blockers)
+        executor.shutdown(wait=True)

@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.metadata
 import json
@@ -202,11 +203,32 @@ async def run_cohort(
     return job
 
 
+
+def default_executor_workers(concurrency):
+    """Size the loop's shared thread pool for wide cohorts.
+
+    HUD's recorder finalizes each camera on the default executor with a bounded
+    join; a burst of episode completions at 64 lanes queued more than a minute of
+    that work ahead of DNS lookups and other to_thread users. Four workers per
+    lane (two cameras, control and slack) plus headroom keeps completions from
+    starving unrelated peers; the pool is mostly waiting, so threads are cheap.
+    """
+    if type(concurrency) is not int or not 1 <= concurrency <= 64:
+        raise ValueError("concurrency must be between 1 and 64")
+    return min(512, max(32, 4 * concurrency + 16))
+
+
 async def evaluate(args):
     if args.runtime == "hud" and not settings.api_key:
         raise ValueError("HUD-hosted simulation requires a configured HUD API key")
     if args.runtime == "hud" and not args.registry_id:
         raise ValueError("--registry-id must identify a dedicated, otherwise idle HUD registry")
+    asyncio.get_running_loop().set_default_executor(
+        ThreadPoolExecutor(
+            max_workers=default_executor_workers(args.concurrency),
+            thread_name_prefix="hud-pooled-default",
+        )
+    )
     rows = cohort_tasks(
         args.concurrency, episodes_per_lane=args.episodes_per_lane, max_steps=args.max_steps
     )

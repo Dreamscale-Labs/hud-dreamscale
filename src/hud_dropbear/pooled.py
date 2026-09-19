@@ -135,6 +135,11 @@ class PooledProvider:
         self._factory = client_factory
         self._journal_path = Path(journal_path) if journal_path is not None else None
         self._journal = None
+        # Durable journal writes get their own single worker: the loop's shared
+        # default executor also carries recorder finalization and DNS lookups,
+        # and at wide cohorts a burst of episode completions queued journal
+        # writes (which precede every POST) behind it for over a minute.
+        self._journal_executor = None
         self._journal_lock = asyncio.Lock()
         self._encoder = ThreadPoolExecutor(max_workers=min(encoding_workers, concurrency))
         self._encoding_gate = asyncio.Semaphore(min(encoding_workers, concurrency))
@@ -220,7 +225,11 @@ class PooledProvider:
 
         async def dispatch_write():
             stamps["executor_submitted"] = time.monotonic()
-            await asyncio.to_thread(write)
+            executor = self._journal_executor
+            if executor is None:
+                await asyncio.to_thread(write)
+            else:
+                await asyncio.get_running_loop().run_in_executor(executor, write)
 
         lock_started = time.monotonic()
         try:
@@ -436,6 +445,9 @@ class PooledProvider:
                 self._journal_path.parent.mkdir(parents=True, exist_ok=True)
                 fd = os.open(self._journal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 self._journal = os.fdopen(fd, "w")
+                self._journal_executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="hud-pooled-journal"
+                )
             self._control = self._client(self.api_base)
             await self._checkpoint("creation_intent", idempotency_key=self._key)
             self._event("provider_starting", concurrency=self.concurrency, capacity=self.capacity)
@@ -854,6 +866,8 @@ class PooledProvider:
                         self._journal.close()
                     except Exception as exc:
                         self._cleanup_evidence_errors.append(("journal:close", exc))
+                if self._journal_executor is not None:
+                    self._journal_executor.shutdown(wait=False)
         if failure is not None:
             self.cleanup_error = type(failure).__name__
             if self._cleanup_evidence_errors:
