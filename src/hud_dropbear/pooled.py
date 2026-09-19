@@ -30,6 +30,10 @@ MODEL = "molmoact2-libero"
 STATUS_REFRESH_INTERVAL_S = 60.0
 STATUS_REFRESH_MARGIN_S = 30.0
 STATUS_REFRESH_RETRY_S = 5.0
+# Connection-phase failures (DNS, TCP connect, TLS) happen before any request
+# bytes are sent, so retrying them cannot duplicate an inference request; a
+# transient inability to open new connections fenced 33 slots in one cohort.
+CONNECT_RETRIES = 3
 
 
 def _http_operation(request):
@@ -307,12 +311,23 @@ class PooledProvider:
             server_timing=response.headers.get("server-timing"),
         )
 
+    def _transport(self):
+        """Per-provider HTTP transport: connect-phase retries and lane-sized keepalive."""
+        return httpx.AsyncHTTPTransport(
+            retries=CONNECT_RETRIES,
+            limits=httpx.Limits(
+                max_keepalive_connections=self.concurrency + 8,
+                max_connections=2 * self.concurrency + 16,
+            ),
+        )
+
     def _client(self, api_base):
         return self._factory(
             api_key=self.api_key,
             api_base=api_base,
             timeout=self.request_timeout,
             event_hooks={"response": [self._response_hook]},
+            transport=self._transport(),
         )
 
     async def _create(self):

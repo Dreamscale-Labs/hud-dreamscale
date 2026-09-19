@@ -71,6 +71,7 @@ class Server:
                 server.closed.append(self)
                 await super().close()
 
+        kwargs.pop("transport", None)  # the fake server owns the transport
         client = Client(transport=httpx.MockTransport(self.handle), **kwargs)
         self.clients.append(client)
         return client
@@ -706,3 +707,27 @@ async def test_journal_checkpoints_do_not_queue_behind_a_saturated_default_execu
         release.set()
         await asyncio.gather(*blockers)
         executor.shutdown(wait=True)
+
+
+async def test_provider_clients_get_connect_retries_and_lane_sized_keepalive():
+    """Connection-phase failures precede any request bytes, so retrying them is safe."""
+    from hud_dropbear import pooled
+
+    seen = []
+
+    def factory(**kwargs):
+        seen.append(kwargs)
+        return SimpleNamespace(close=_noop)
+
+    async def _noop():
+        return None
+
+    provider = PooledProvider(
+        api_key="db_test", api_base="https://control.test", concurrency=64, client_factory=factory
+    )
+    provider._client("https://gateway.test")
+    transport = seen[-1]["transport"]
+    assert isinstance(transport, httpx.AsyncHTTPTransport)
+    pool = transport._pool
+    assert pool._retries == pooled.CONNECT_RETRIES == 3
+    assert pool._max_keepalive_connections == 72 and pool._max_connections == 144
