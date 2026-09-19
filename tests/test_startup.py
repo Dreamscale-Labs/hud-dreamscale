@@ -611,3 +611,127 @@ def test_pooled_build_context_contains_only_runtime_sources(tmp_path):
     assert source.served_environment_module() == "pooled_env.py"
     assert source.served_environment_name() == POOLED_ENV_NAME
     assert source.validate() == []
+
+
+class _RetryPlatform:
+    """Registry with an idle baseline; rows are set by the test after entry."""
+
+    def __init__(self):
+        self.rows = {}
+        self.stopped = []
+
+    async def aget(self, path, *, params=None):
+        if path == "/registry/registry":
+            return {"id": "registry", "name": "environment", "latest_build_id": "build"}
+        return {"instances": list(self.rows.values()), "has_more": False}
+
+    async def apost(self, path, *, json):
+        self.stopped += json["instance_ids"]
+        for identity in json["instance_ids"]:
+            self.rows[identity]["status"] = "terminated"
+        return {"stopped": len(json["instance_ids"])}
+
+    def add(self, identity, status="running", build_id="build"):
+        self.rows[identity] = {
+            "id": identity,
+            "registry_id": "registry",
+            "status": status,
+            "build_id": build_id,
+        }
+
+
+async def test_released_retry_instance_is_owned_but_not_counted_as_live():
+    platform = _RetryPlatform()
+    guard = ExclusiveRegistryCampaign(
+        platform,
+        "registry",
+        environment_name="environment",
+        expected_instances=2,
+        build_id="build",
+        retry_allowance=2,
+    )
+    async with guard:
+        # A lane readiness retry released its first simulator before leasing another.
+        platform.add("retired", status="terminated")
+        platform.add("a")
+        platform.add("b")
+        receipt = await guard.validate_ready()
+        assert receipt["instance_ids"] == ["a", "b"]
+        assert receipt["retired_instance_ids"] == ["retired"]
+    assert guard.cleanup_receipt["verified"]
+    assert platform.stopped == ["a", "b"]
+    assert guard.cleanup_receipt["instance_ids"] == ["a", "b", "retired"]
+
+
+async def test_live_created_instances_beyond_expected_are_rejected_despite_allowance():
+    platform = _RetryPlatform()
+    guard = ExclusiveRegistryCampaign(
+        platform,
+        "registry",
+        environment_name="environment",
+        expected_instances=2,
+        build_id="build",
+        retry_allowance=2,
+    )
+    with pytest.raises(RuntimeError, match="Live created instance count exceeds"):
+        async with guard:
+            for identity in ("a", "b", "c"):
+                platform.add(identity)
+            await guard.validate_ready()
+    assert guard.cleanup_receipt["verified"]
+    assert sorted(platform.stopped) == ["a", "b", "c"]
+
+
+async def test_created_instances_beyond_retry_allowance_are_rejected():
+    platform = _RetryPlatform()
+    guard = ExclusiveRegistryCampaign(
+        platform,
+        "registry",
+        environment_name="environment",
+        expected_instances=1,
+        build_id="build",
+        retry_allowance=1,
+    )
+    with pytest.raises(RuntimeError, match="Created instance count exceeds"):
+        async with guard:
+            platform.add("r1", status="terminated")
+            platform.add("r2", status="terminated")
+            platform.add("a")
+            await guard.validate_ready()
+    # Ownership beyond the bound is ambiguous: refuse exact-ID cleanup, as before.
+    assert platform.stopped == []
+    assert guard.cleanup_receipt == {"verified": False, "reason": "RuntimeError"}
+
+
+async def test_default_retry_allowance_keeps_exact_ownership():
+    platform = _RetryPlatform()
+    guard = ExclusiveRegistryCampaign(
+        platform, "registry", environment_name="environment", expected_instances=1
+    )
+    with pytest.raises(RuntimeError, match="Created instance count exceeds"):
+        async with guard:
+            platform.add("retired", status="terminated")
+            platform.add("a")
+            await guard.validate_ready()
+    assert platform.stopped == []
+    assert guard.cleanup_receipt == {"verified": False, "reason": "RuntimeError"}
+
+
+def test_retry_allowance_bounds():
+    for allowance in (0, 1, 128):
+        ExclusiveRegistryCampaign(
+            None,
+            "registry",
+            environment_name="environment",
+            expected_instances=64,
+            retry_allowance=allowance,
+        )
+    for allowance in (-1, True, 1.5, None):
+        with pytest.raises(ValueError):
+            ExclusiveRegistryCampaign(
+                None,
+                "registry",
+                environment_name="environment",
+                expected_instances=64,
+                retry_allowance=allowance,
+            )

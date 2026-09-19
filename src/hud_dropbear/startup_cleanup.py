@@ -101,13 +101,25 @@ class ExclusiveRegistryCampaign:
     """Bound a concurrent runtime pool in a dedicated registry, including failed starts."""
 
     def __init__(
-        self, platform, registry_id, *, environment_name, expected_instances, build_id=None
+        self,
+        platform,
+        registry_id,
+        *,
+        environment_name,
+        expected_instances,
+        build_id=None,
+        retry_allowance=0,
     ):
         if type(expected_instances) is not int or not 1 <= expected_instances <= 64:
             raise ValueError("Campaign must own between one and 64 instances")
+        if type(retry_allowance) is not int or retry_allowance < 0:
+            raise ValueError("retry_allowance must be a non-negative integer")
         self.platform, self.registry_id = platform, registry_id
         self.environment_name = environment_name
         self.expected_instances, self.build_id = expected_instances, build_id
+        # Lane readiness retries release an unready simulator before leasing another,
+        # so the campaign may create (and still owns) that many extra terminated rows.
+        self.retry_allowance = retry_allowance
         self.before_ids = None
         self.owned_ids = None
         self.cleanup_receipt = {"verified": False, "reason": "not_started"}
@@ -122,11 +134,15 @@ class ExclusiveRegistryCampaign:
         self.before_ids = set(inventory)
         return self
 
-    async def _created(self, *, validate_build=True):
+    async def _created(self, *, validate_build=True, enforce_live=True):
         inventory = await instance_inventory(self.platform, self.registry_id)
         created = {key: row for key, row in inventory.items() if key not in self.before_ids}
-        if len(created) > self.expected_instances:
+        if len(created) > self.expected_instances + self.retry_allowance:
             raise RuntimeError("Created instance count exceeds exclusive campaign ownership")
+        live = [key for key, row in created.items() if not _terminated(row)]
+        if enforce_live and len(live) > self.expected_instances:
+            # Within the created bound every row is ours; cleanup still stops them all.
+            raise RuntimeError("Live created instance count exceeds exclusive campaign ownership")
         if (
             validate_build
             and self.build_id
@@ -137,21 +153,22 @@ class ExclusiveRegistryCampaign:
 
     async def validate_ready(self):
         created = await self._created()
-        if len(created) != self.expected_instances or any(
-            _terminated(row) for row in created.values()
-        ):
+        live = sorted(key for key, row in created.items() if not _terminated(row))
+        if len(live) != self.expected_instances:
             raise RuntimeError("Campaign has not established every expected live instance")
+        # Released retry simulators remain owned so cleanup verifies their termination.
         self.owned_ids = set(created)
         return {
             **self.registry_receipt,
-            "instance_ids": sorted(created),
+            "instance_ids": live,
+            "retired_instance_ids": sorted(set(created) - set(live)),
             "build_ids": sorted({str(row.get("build_id")) for row in created.values()}),
         }
 
     async def _cleanup(self):
         # A wrong build invalidates the run, not ownership of its allocated instances.
         if self.owned_ids is None:
-            created = await self._created(validate_build=False)
+            created = await self._created(validate_build=False, enforce_live=False)
             owned = set(created)
         else:
             # Once verified, these exact IDs remain ours even if another runtime

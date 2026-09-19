@@ -31,6 +31,8 @@ class RuntimePool:
     A borrow spans HUD's setup, agent execution, grading and claim cleanup.
     """
 
+    DEFAULT_LANE_READY_ATTEMPTS = 3
+
     def __init__(
         self,
         provider,
@@ -42,7 +44,7 @@ class RuntimePool:
         cleanup_timeout=60,
         connector=None,
         lane_ready_timeout=None,
-        lane_ready_attempts=3,
+        lane_ready_attempts=None,
     ):
         if type(concurrency) is not int or not 1 <= concurrency <= 64:
             raise ValueError("concurrency must be between 1 and 64")
@@ -54,6 +56,8 @@ class RuntimePool:
             raise ValueError("startup_timeout must be a positive finite number")
         if lane_ready_timeout is None:
             lane_ready_timeout = min(startup_timeout, 300)
+        if lane_ready_attempts is None:
+            lane_ready_attempts = self.DEFAULT_LANE_READY_ATTEMPTS
         if (
             type(lane_ready_timeout) not in (int, float)
             or not math.isfinite(lane_ready_timeout)

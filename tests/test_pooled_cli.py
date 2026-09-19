@@ -337,6 +337,9 @@ async def test_runner_writes_results_and_cleanup_on_normal_return(runtime, tmp_p
 
         class Guard:
             def __init__(self, *args, **kwargs):
+                # Every lane may retry readiness; released simulators stay owned.
+                assert kwargs["expected_instances"] == 8
+                assert kwargs["retry_allowance"] == 8 * (cli.RuntimePool.DEFAULT_LANE_READY_ATTEMPTS - 1)
                 self.cleanup_receipt = {"verified": True}
 
             async def __aenter__(self):

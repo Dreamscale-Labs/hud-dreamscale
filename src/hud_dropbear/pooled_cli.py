@@ -272,6 +272,7 @@ async def evaluate(args):
             environment_name=POOLED_ENV_NAME,
             expected_instances=args.concurrency,
             build_id=args.build_id,
+            retry_allowance=runtimes.concurrency * (runtimes.lane_ready_attempts - 1),
         )
         if args.runtime == "hud"
         else None
