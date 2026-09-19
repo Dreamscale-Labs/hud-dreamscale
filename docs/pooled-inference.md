@@ -5,7 +5,7 @@ pooled inference API. Configure a ready-made agent; HUD still executes actions,
 grades tasks and records traces. Dropbear owns native model preprocessing, GPU
 batching and inference. The client needs no GPU or model weights.
 
-**Qualification status (19 September 2026, 20:20 UTC):** on the current reusable-service
+**Qualification status (19 September 2026, 23:30 UTC):** on the current reusable-service
 release, HUD-hosted cohorts passed with zero episode integration errors and
 100% simulator success at widths 8 (16/16), 3 (6/6), 1 (6/6, all six fixed
 task/initial-state pairs), 32 (64/64), 9 (18/18) and 33 (66/66); every planned
@@ -35,7 +35,7 @@ replica wall; from Sydney it was about 1.08 s. Earlier finite-release results
 failed 64-lane attempt with 78/128 successes and 50 integration errors) remain
 recorded but do not qualify this release. The older six-episode demo uses the
 separate exclusive-session API. Local contract tests are not GPU capacity
-evidence.
+evidence. Width 64 is still outstanding: attempts 006c/006d/006e failed at the first completion wave (client stall, then a new-connection blackout; see the campaign log) and 006f ended before its first episode when the lane readiness replacement met the exclusive-registry ownership guard, fixed in `1021e00` (`retry_allowance`, `retired_instance_ids`).
 
 ## Installation during development
 
