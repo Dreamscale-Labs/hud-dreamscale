@@ -389,8 +389,8 @@ async def test_runner_writes_results_and_cleanup_on_normal_return(runtime, tmp_p
 def test_default_executor_workers_scale_with_lanes():
     from hud_dropbear.pooled_cli import default_executor_workers
 
-    assert default_executor_workers(1) == 32
-    assert default_executor_workers(8) == 48
-    assert default_executor_workers(64) == 272
+    assert default_executor_workers(1) == 80
+    assert default_executor_workers(8) == 192
+    assert default_executor_workers(64) == 1088
     with pytest.raises(ValueError):
         default_executor_workers(0)

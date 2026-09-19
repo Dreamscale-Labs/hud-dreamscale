@@ -208,14 +208,17 @@ def default_executor_workers(concurrency):
     """Size the loop's shared thread pool for wide cohorts.
 
     HUD's recorder finalizes each camera on the default executor with a bounded
-    join; a burst of episode completions at 64 lanes queued more than a minute of
-    that work ahead of DNS lookups and other to_thread users. Four workers per
-    lane (two cameras, control and slack) plus headroom keeps completions from
-    starving unrelated peers; the pool is mostly waiting, so threads are cheap.
+    join and then flushes telemetry with a bounded wait, so one lane's close can
+    hold a worker for tens of seconds; asyncio also resolves every new
+    connection's hostname on this same pool. A burst of episode completions at
+    64 lanes starved those lookups (new connections timed out in DNS while
+    established ones kept serving, on an idle host). Sixteen workers per lane
+    plus headroom keeps completions from starving unrelated peers; the pool is
+    mostly waiting, so threads are cheap.
     """
     if type(concurrency) is not int or not 1 <= concurrency <= 64:
         raise ValueError("concurrency must be between 1 and 64")
-    return min(512, max(32, 4 * concurrency + 16))
+    return min(2048, max(64, 16 * concurrency + 64))
 
 
 async def evaluate(args):
