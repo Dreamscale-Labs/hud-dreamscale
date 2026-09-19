@@ -599,6 +599,29 @@ def test_completed_repricing_cannot_repeat_refine_or_reopen_stage(tmp_path):
     assert budget.path.read_bytes() == before
 
 
+def test_other_provider_binds_and_settles_after_completed_repricing(tmp_path):
+    """A Modal refinement fixes only Modal's inventory; exact HUD instances still bind."""
+    budget, path, _ = completed_lifetime_fixture(tmp_path)
+    reprice_completed(budget, path)
+    budget.register_owned_resource("hud", "env-1", baseline_usd="0", evidence_ref="usage")
+    budget.bind_resource("wide", "hud", "env-1")
+    budget.confirm_termination("hud", "env-1", terminated_at="1700000500", evidence_ref="usage")
+    budget.record_billing(
+        "hud", "env-1", total_usd="0.02", evidence_ref="usage", settled_through="1700000500"
+    )
+    from hud_dropbear import costs as ledger
+
+    with budget.path.open() as handle:
+        state = ledger._state(ledger._read(handle))
+    assert "hud:env-1" in state["stages"]["wide"]["resources"]
+    assert state["resources"]["hud:env-1"]["settled_through"] == "1700000500"
+    budget.register_owned_resource("modal", "ap-later", baseline_usd="0", evidence_ref="owned")
+    before = budget.path.read_bytes()
+    with pytest.raises(ValueError, match="refined for this provider"):
+        budget.bind_resource("wide", "modal", "ap-later")
+    assert budget.path.read_bytes() == before
+
+
 def remaining_lifetime_proof(path, proof):
     import json
 

@@ -329,8 +329,12 @@ class CampaignBudget:
             if key not in state["resources"] or stage not in state["stages"]:
                 raise ValueError("Register resource and reserve stage before binding")
             row = state["stages"][stage]
-            if row["released"] or row["refined_providers"] or key in row["resources"]:
-                raise ValueError("Stage is reconciled, refined, or resource already bound")
+            # A refinement fixes one provider's complete resource inventory; other
+            # providers may still bind their exact resources for settlement.
+            if row["released"] or provider in row["refined_providers"] or key in row["resources"]:
+                raise ValueError(
+                    "Stage is reconciled, refined for this provider, or resource already bound"
+                )
             if state["resources"][key]["terminated_at"] is not None:
                 raise ValueError("Cannot bind a resource already confirmed terminated")
 
@@ -394,7 +398,8 @@ class CampaignBudget:
 
         This preserves the original full-lifetime estimate and a nonnegative lag
         allowance. It never releases a stage, settles a bill, or erases posted
-        spend. Each provider can be refined once; no later resources can bind.
+        spend. Each provider can be refined once; no later resources of that
+        provider can bind (other providers may still bind for settlement).
 
         The caller must review the content-addressed evidence and its complete
         resource inventory. JSON assertions and file hashes provide provenance,
