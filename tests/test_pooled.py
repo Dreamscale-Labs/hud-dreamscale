@@ -731,3 +731,4 @@ async def test_provider_clients_get_connect_retries_and_lane_sized_keepalive():
     pool = transport._pool
     assert pool._retries == pooled.CONNECT_RETRIES == 3
     assert pool._max_keepalive_connections == 72 and pool._max_connections == 144
+    assert pool._keepalive_expiry == pooled.KEEPALIVE_EXPIRY_S == 900.0

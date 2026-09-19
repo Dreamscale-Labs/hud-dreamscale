@@ -34,6 +34,11 @@ STATUS_REFRESH_RETRY_S = 5.0
 # bytes are sent, so retrying them cannot duplicate an inference request; a
 # transient inability to open new connections fenced 33 slots in one cohort.
 CONNECT_RETRIES = 3
+# Idle pooled connections must outlive an episode boundary (environment reset
+# and the next episode's setup take tens of seconds); httpx's 5 s default let
+# every lane reconnect at exactly the moment a transient outage made new
+# connections impossible while established ones kept serving.
+KEEPALIVE_EXPIRY_S = 900.0
 
 
 def _http_operation(request):
@@ -318,6 +323,7 @@ class PooledProvider:
             limits=httpx.Limits(
                 max_keepalive_connections=self.concurrency + 8,
                 max_connections=2 * self.concurrency + 16,
+                keepalive_expiry=KEEPALIVE_EXPIRY_S,
             ),
         )
 
