@@ -5,22 +5,34 @@ pooled inference API. Configure a ready-made agent; HUD still executes actions,
 grades tasks and records traces. Dropbear owns native model preprocessing, GPU
 batching and inference. The client needs no GPU or model weights.
 
-**Qualification status (19 September 2026):** on the current reusable-service
+**Qualification status (19 September 2026, 20:20 UTC):** on the current reusable-service
 release, HUD-hosted cohorts passed with zero episode integration errors and
 100% simulator success at widths 8 (16/16), 3 (6/6), 1 (6/6, all six fixed
-task/initial-state pairs), 32 (64/64) and 9 (18/18); every planned row ran and
-is retained, every job was re-read through the HUD Platform API, and the exact
-provider Apps were confirmed stopped afterwards. A 33-lane cohort reached 57/66
-but failed acceptance on nine episodes fenced when the operator grant's cost cap
-was sized too tightly for the control plane's rolling renewal reserve; that is
-an operator funding error, not a policy or HUD defect, and it is recorded as a
-failed attempt. Widths 64 and 63 have not been run on this release. The dev
-workers for these results were placed on GCP `us-west4` under an explicit,
-dev-only relaxation of the AWS cloud pin after AWS `us-west` H100 capacity was
-unavailable for several hours; the region selector and the model contract were
-unchanged, and each worker records its actual placement. Earlier finite-release
-results (two eight-lane passes, a three-lane pass, a failed one-lane attempt and
-a failed 64-lane attempt with 78/128 successes and 50 integration errors) remain
+task/initial-state pairs), 32 (64/64), 9 (18/18) and 33 (66/66); every planned
+row ran and is retained, every job was re-read through the HUD Platform API, and
+the exact provider Apps were confirmed stopped afterwards. Widths 1–33 therefore
+validate arbitrary concurrency below the eight-worker ceiling; 64 lanes (eight
+H100 workers) has not yet passed acceptance. Its attempts are all recorded:
+68/128, 97/128 and 120/128 successes with 60, 31 and 8 integration errors, then
+62/128 with 66 errors, each above or near the 50% floor but failing the
+zero-integration-error gate. Those runs exposed three client defects that are
+now fixed with tests: a leased HUD runtime whose control connection never became
+ready stalled the whole pool (now released and replaced within a per-lane bound);
+a wave of episode completions saturated the event loop's default thread pool
+with recorder finalization and starved the durable request journal that precedes
+every inference POST (journal writes now use a dedicated worker and the default
+pool is sized per lane); and a transient inability to open new connections fenced
+slots after single connect timeouts (connection-phase failures are now retried
+before any request bytes are sent, with lane-sized keepalive pools). The 33-lane
+pass is the first cohort run with all three fixes. The dev workers for these
+results were placed on GCP `us-west4` under an explicit, dev-only relaxation of
+the AWS cloud pin after AWS `us-west` H100 capacity was unavailable for several
+hours; the region selector and the model contract were unchanged, and each
+worker records its actual placement. From an operator host in AWS `us-west-2`
+the steady client-observed model call is p50 about 0.52 s against an 87 ms
+replica wall; from Sydney it was about 1.08 s. Earlier finite-release results
+(two eight-lane passes, a three-lane pass, a failed one-lane attempt and a
+failed 64-lane attempt with 78/128 successes and 50 integration errors) remain
 recorded but do not qualify this release. The older six-episode demo uses the
 separate exclusive-session API. Local contract tests are not GPU capacity
 evidence.
@@ -252,6 +264,9 @@ In the pinned HUD SDK, the language-agent base is named `ToolAgent`.
 | Payload | Images, geometry and instructions in; action chunks out. Not Chat Completions |
 | Resource lifetime | Explicit async context owns a paid deployment and reusable simulators |
 | Request recovery | Stable slot, monotonic sequence and request ID; uncertain calls are resolved, never blindly replayed |
+| Transport retries | Connection-phase failures (DNS, TCP, TLS) are retried because nothing was sent; a language-agent SDK retries the same class, but here a sent inference request is never retried |
+| Simulator readiness | A leased simulator whose control connection never becomes ready is released and replaced within a bounded number of attempts, the way an agent framework replaces a dead tool sandbox |
+| Shared executors | Durable request journaling uses its own worker and the default thread pool is sized per lane, so recorder finalization cannot delay the next model call |
 | Episode state | Fresh adapter and action queue per episode; transport clients persist |
 | Batching | Dropbear's prefill/action scheduler owns batching; do not add HUD `BatchedModel` |
 | Model attribution | Immutable provider identity is recorded in trace metadata; generic HUD model attribution remains an upstream API request |
