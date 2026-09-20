@@ -267,6 +267,8 @@ In the pinned HUD SDK, the language-agent base is named `ToolAgent`.
 | Transport retries | Connection-phase failures (DNS, TCP, TLS) are retried because nothing was sent; a language-agent SDK retries the same class, but here a sent inference request is never retried |
 | Simulator readiness | A leased simulator whose control connection never becomes ready is released and replaced within a bounded number of attempts, the way an agent framework replaces a dead tool sandbox |
 | Shared executors | Durable request journaling uses its own worker and the default thread pool is sized per lane, so recorder finalization cannot delay the next model call |
+| Hostname resolution | The gateway host is resolved once on a private thread and cached (60 s TTL, stale answers kept on failure); new connections go to pinned addresses and TLS still verifies the hostname. Language-agent SDKs resolve per connection on asyncio's default executor, which stalled at 64-lane batch boundaries |
+| Connection diagnostics | Every `inference_post` records whether its connection was reused and, for new connections, the TCP and TLS phase durations and the negotiated HTTP version; language-agent clients expose none of this |
 | Episode state | Fresh adapter and action queue per episode; transport clients persist |
 | Batching | Dropbear's prefill/action scheduler owns batching; do not add HUD `BatchedModel` |
 | Model attribution | Immutable provider identity is recorded in trace metadata; generic HUD model attribution remains an upstream API request |
