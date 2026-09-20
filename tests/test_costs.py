@@ -1343,9 +1343,9 @@ def test_revision_rejects_changed_prior_evidence_or_inventory(tmp_path, mutation
     elif mutation == "single_capture":
         proof["billing_captures"] = proof["billing_captures"][:1]
     elif mutation == "capture_before_buffer":
-        proof["billing_captures"][0]["captured_unix_s"] = "4000"
+        proof["billing_captures"][0]["captured_unix_s"] = "2100"  # 1,100 s after termination
     elif mutation == "captures_too_close":
-        proof["billing_captures"][1]["captured_unix_s"] = "8000"
+        proof["billing_captures"][1]["captured_unix_s"] = "5500"  # 500 s after the first capture
     elif mutation == "capture_hash":
         proof["billing_captures"][1]["sha256"] = "0" * 64
     elif mutation == "capture_total_differs":
@@ -1411,3 +1411,11 @@ def budget_total(budget, identity):
         if row.get("event") == "billing" and row["resource"] == f"modal:{identity}":
             total = row["total_usd"]
     return total
+
+
+def test_revision_review_minimums_are_twenty_and_ten_minutes():
+    from hud_dropbear import costs
+
+    assert costs.REVISION_MIN_POST_TERMINATION_S == Decimal(1200)
+    assert costs.REVISION_MIN_CAPTURE_SEPARATION_S == Decimal(600)
+

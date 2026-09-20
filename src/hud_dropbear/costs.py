@@ -18,8 +18,11 @@ PHASES = ("startup", "idle", "run", "cleanup")
 # captured at least this long after the last owned termination and again at
 # least this long later, with unchanged per-App totals. These are review
 # minimums, not a provider settlement boundary.
-REVISION_MIN_POST_TERMINATION_S = Decimal(3600)
-REVISION_MIN_CAPTURE_SEPARATION_S = Decimal(3600)
+# 20 September 2026: relaxed from one hour each after nine completed groups whose
+# first capture, taken 20-60 minutes after termination, already matched the later
+# captures exactly; the two-capture identical-totals check itself is unchanged.
+REVISION_MIN_POST_TERMINATION_S = Decimal(1200)
+REVISION_MIN_CAPTURE_SEPARATION_S = Decimal(600)
 
 
 class BudgetExceededError(RuntimeError):
