@@ -258,6 +258,7 @@ async def evaluate(args):
         expected_release_id=args.expected_release_id,
         expected_release_sha256=args.expected_release_sha256,
         http2=args.http2,
+        pinned_resolver=args.pinned_resolver,
     )
     runtimes = RuntimePool(
         placement,
@@ -284,6 +285,7 @@ async def evaluate(args):
         runtime=args.runtime,
         concurrency=args.concurrency,
         http2=args.http2,
+        pinned_resolver=args.pinned_resolver,
         expected_episodes=len(rows),
         episodes_per_lane=args.episodes_per_lane,
         max_not_admitted_resubmissions=args.max_not_admitted_resubmissions,
@@ -460,6 +462,12 @@ def parser():
         action="store_true",
         default=os.environ.get("HUD_DROPBEAR_HTTP2", "") == "1",
         help="Multiplex each lane's inference requests over HTTP/2 (also HUD_DROPBEAR_HTTP2=1)",
+    )
+    p.add_argument(
+        "--no-pinned-resolver",
+        dest="pinned_resolver",
+        action="store_false",
+        help="Resolve the gateway hostname per connection on the loop's default executor (default: pinned)",
     )
     p.add_argument("--startup-timeout", type=float, default=1000)
     p.add_argument("--rollout-timeout", type=float, default=900)

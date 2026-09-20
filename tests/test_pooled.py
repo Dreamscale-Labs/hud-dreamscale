@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import json
+import socket
 from types import SimpleNamespace
 
 import httpx
@@ -766,7 +767,8 @@ async def test_tracing_transport_records_connect_phases_only_for_new_connections
         phases = transport.pop_phases("r1")
         assert phases["connect_tcp_failed"] is False and phases["connect_tcp_s"] >= 0
         assert "start_tls_s" not in phases  # plain HTTP: no TLS phase
-        assert transport.pop_phases("r2") is None  # keep-alive reuse emits no connect events
+        # keep-alive reuse emits no connect events; only the negotiated version is recorded
+        assert transport.pop_phases("r2") == {"http_version": "HTTP/1.1"}
         assert transport.pop_phases("r1") is None  # popped once
     finally:
         server.close()
@@ -820,3 +822,86 @@ def test_provider_transport_is_http2_capable_when_requested():
     assert isinstance(transport, TracingTransport)
     assert transport._pool._http2 is True
     assert PooledProvider(concurrency=2)._transport()._pool._http2 is False
+
+
+async def test_pinned_backend_connects_by_cached_address_and_tls_keeps_hostname_semantics():
+    import asyncio
+
+    from hud_dropbear.pooled import PinnedResolver, TracingTransport
+
+    async def handle(reader, writer):
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = await reader.read(65536)
+            if not chunk:
+                writer.close()
+                return
+            head += chunk
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    calls = []
+
+    def fake_getaddrinfo(host, port_, **kwargs):
+        calls.append(host)
+        assert host == "gateway.invalid"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port_))]
+
+    resolver = PinnedResolver(getaddrinfo=fake_getaddrinfo, ttl_s=60)
+    transport = TracingTransport(retries=0, resolver=resolver)
+    try:
+        async with httpx.AsyncClient(transport=transport, timeout=5) as client:
+            for index in range(3):
+                response = await client.get(
+                    f"http://gateway.invalid:{port}/", extensions={"dropbear_request_id": f"r{index}"}
+                )
+                assert response.status_code == 200
+        assert calls == ["gateway.invalid"]  # one lookup, then the cache
+        phases = transport.pop_phases("r0")
+        assert phases["connect_tcp_failed"] is False and phases["http_version"] == "HTTP/1.1"
+        unpinned = TracingTransport(retries=0)
+        async with httpx.AsyncClient(transport=unpinned, timeout=5) as client:
+            with pytest.raises(httpx.ConnectError):
+                await client.get(f"http://gateway.invalid:{port}/")
+        await unpinned.aclose()
+    finally:
+        server.close()
+        await server.wait_closed()
+        await transport.aclose()
+        resolver.close()
+
+
+async def test_pinned_resolver_serves_stale_addresses_when_refresh_fails():
+    from hud_dropbear.pooled import PinnedResolver
+
+    answers = [[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))]]
+
+    def fake_getaddrinfo(host, port, **kwargs):
+        if not answers:
+            raise OSError("resolver unavailable")
+        return answers.pop()
+
+    resolver = PinnedResolver(getaddrinfo=fake_getaddrinfo, ttl_s=0.01)
+    try:
+        assert await resolver.resolve("gw", 443) == ["10.0.0.1"]
+        await asyncio.sleep(0.02)
+        assert await resolver.resolve("gw", 443) == ["10.0.0.1"]  # refresh failed: stale served
+        assert resolver.lookups == 2
+        with pytest.raises(OSError):
+            await resolver.resolve("other", 443)
+    finally:
+        resolver.close()
+
+
+def test_provider_pins_the_resolver_by_default():
+    from hud_dropbear.pooled import PinnedBackend, PooledProvider
+
+    provider = PooledProvider(concurrency=2)
+    assert isinstance(provider._transport()._pool._network_backend, PinnedBackend)
+    assert not isinstance(
+        PooledProvider(concurrency=2, pinned_resolver=False)._transport()._pool._network_backend,
+        PinnedBackend,
+    )

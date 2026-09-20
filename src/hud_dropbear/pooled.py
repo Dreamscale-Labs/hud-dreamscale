@@ -7,10 +7,12 @@ import math
 import os
 import re
 import time
+import socket
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
+import httpcore
 import httpx
 import numpy as np
 from dropbear.errors import DropbearError
@@ -46,6 +48,79 @@ _CONNECT_PHASES = (
 )
 
 
+class PinnedResolver:
+    """Resolve gateway hostnames on a private thread with a TTL cache, serving stale answers on failure.
+
+    asyncio resolves every new connection's hostname on the loop's default executor
+    (also shared with recorder finalization) and anyio only skips the lookup for
+    IP literals. Group 006h showed the connect phase timing out at exactly the 5 s
+    bound at episode-batch boundaries while the TLS phase never failed and a
+    separate process resolved the same host in 1 ms, so the lookup is taken off
+    the request path: the pinned backend connects to a cached address and TLS
+    still verifies the certificate against the original hostname.
+    """
+
+    def __init__(self, *, ttl_s=60.0, timeout_s=5.0, getaddrinfo=socket.getaddrinfo):
+        self.ttl_s, self.timeout_s, self._getaddrinfo = float(ttl_s), float(timeout_s), getaddrinfo
+        self._executor = ThreadPoolExecutor(2, thread_name_prefix="hud-pooled-resolve")
+        self._cache = {}
+        self.lookups = 0
+
+    async def resolve(self, host, port):
+        now = time.monotonic()
+        hit = self._cache.get(host)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        loop = asyncio.get_running_loop()
+        self.lookups += 1
+        try:
+            async with asyncio.timeout(self.timeout_s):
+                infos = await loop.run_in_executor(
+                    self._executor,
+                    functools.partial(self._getaddrinfo, host, port, type=socket.SOCK_STREAM),
+                )
+        except Exception:
+            if hit is None:
+                raise
+            return hit[1]  # stale but known-good addresses beat a failed refresh
+        addresses = [info[4][0] for info in infos if info[0] == socket.AF_INET]
+        addresses = addresses or [info[4][0] for info in infos]
+        if not addresses:
+            if hit is None:
+                raise OSError(f"no addresses for {host}")
+            return hit[1]
+        self._cache[host] = (now + self.ttl_s, addresses)
+        return addresses
+
+    def close(self):
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+class PinnedBackend(httpcore.AsyncNetworkBackend):
+    """httpcore backend that connects to resolver-pinned addresses instead of hostnames."""
+
+    def __init__(self, inner, resolver):
+        self._inner, self._resolver = inner, resolver
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        addresses = await self._resolver.resolve(host, port)
+        error = None
+        for address in addresses:
+            try:
+                return await self._inner.connect_tcp(
+                    address, port, timeout=timeout, local_address=local_address, socket_options=socket_options
+                )
+            except Exception as exc:  # try the next pinned address
+                error = exc
+        raise error
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        return await self._inner.connect_unix_socket(path, timeout=timeout, socket_options=socket_options)
+
+    async def sleep(self, seconds):
+        await self._inner.sleep(seconds)
+
+
 class TracingTransport(httpx.AsyncHTTPTransport):
     """httpx transport that records connect-phase timings per Dropbear request id.
 
@@ -56,9 +131,11 @@ class TracingTransport(httpx.AsyncHTTPTransport):
     failed connection is attributed too.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, resolver=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.connect_phases = {}
+        if resolver is not None:
+            self._pool._network_backend = PinnedBackend(self._pool._network_backend, resolver)
 
     async def handle_async_request(self, request):
         marks = {}
@@ -67,12 +144,18 @@ class TracingTransport(httpx.AsyncHTTPTransport):
             marks[name] = time.monotonic()
 
         request.extensions.setdefault("trace", trace)
+        response = None
         try:
-            return await super().handle_async_request(request)
+            response = await super().handle_async_request(request)
+            return response
         finally:
             key = request.extensions.get("dropbear_request_id")
             phases = connect_phases(marks)
-            if key is not None and phases:
+            if key is not None and (phases or response is not None):
+                phases = dict(phases or {})
+                if response is not None:
+                    version = response.extensions.get("http_version")
+                    phases["http_version"] = version.decode() if isinstance(version, bytes) else version
                 self.connect_phases[key] = phases
 
     def pop_phases(self, request_id):
@@ -163,6 +246,7 @@ class PooledProvider:
         max_not_admitted_resubmissions=0,
         encoding_workers=4,
         http2=False,
+        pinned_resolver=True,
         expected_release_id=None,
         expected_release_sha256=None,
         client_factory=AsyncInferenceClient,
@@ -193,6 +277,7 @@ class PooledProvider:
         self.close_timeout, self.poll_interval = close_timeout, poll_interval
         self.request_timeout = request_timeout
         self.http2 = bool(http2)
+        self._resolver = PinnedResolver() if pinned_resolver else None
         self._transports = {}
         self.max_not_admitted_resubmissions = max_not_admitted_resubmissions
         self.expected_release_id = expected_release_id
@@ -375,6 +460,7 @@ class PooledProvider:
     def _transport(self):
         """Per-client HTTP transport: connect-phase retries, lane-sized keepalive, tracing."""
         return TracingTransport(
+            resolver=self._resolver,
             retries=CONNECT_RETRIES,
             http2=self.http2,
             limits=httpx.Limits(
@@ -399,7 +485,8 @@ class PooledProvider:
     def _connect_fields(self, slot, request_id):
         transport = self._transports.get(slot)
         phases = transport.pop_phases(request_id) if transport is not None else None
-        return {"connection_reused": phases is None, **(phases or {})}
+        reused = phases is None or "connect_tcp_s" not in phases
+        return {"connection_reused": reused, **(phases or {})}
 
     async def _create(self):
         self._create_attempted = True
