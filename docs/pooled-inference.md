@@ -368,3 +368,14 @@ The ledger bounds declared reservations; it is not a provider-side spending
 switch. Rates must include the actual CPU/RAM envelope and placement charges,
 with finite resource lifetimes, verified teardown and billing-lag reserves.
 Requested resources alone may not bound a provider's billable resource use.
+
+### Connection diagnostics and HTTP/2 (20 September 2026)
+
+Every `inference_post` event now carries `connection_reused` plus, when the request opened
+a new connection, the httpcore connect phases `connect_tcp_s` / `connect_tcp_failed`
+(hostname lookup and TCP) and `start_tls_s` / `start_tls_failed`, recorded by the
+`TracingTransport` that the pooled provider hands to each lane's SDK client. `--http2`
+(or `HUD_DROPBEAR_HTTP2=1`) negotiates HTTP/2 with the gateway ingress so a lane keeps one
+long-lived multiplexed connection instead of reconnecting; `job_start` records the choice.
+Both were added after group 006g, where every failed episode was a POST that needed a new
+gateway connection and timed out at the 5 s connect bound during an episode-batch boundary.

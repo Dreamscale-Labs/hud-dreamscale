@@ -39,6 +39,59 @@ CONNECT_RETRIES = 3
 # every lane reconnect at exactly the moment a transient outage made new
 # connections impossible while established ones kept serving.
 KEEPALIVE_EXPIRY_S = 900.0
+# httpcore trace events that bound the connection-establishment phases.
+_CONNECT_PHASES = (
+    ("connect_tcp", "connection.connect_tcp"),
+    ("start_tls", "connection.start_tls"),
+)
+
+
+class TracingTransport(httpx.AsyncHTTPTransport):
+    """httpx transport that records connect-phase timings per Dropbear request id.
+
+    httpcore emits trace events around TCP connection (which includes the
+    hostname lookup) and the TLS handshake only when a request opens a new
+    connection; a reused keep-alive connection emits neither. The phases are
+    kept until the provider pops them for its ``inference_post`` event, so a
+    failed connection is attributed too.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.connect_phases = {}
+
+    async def handle_async_request(self, request):
+        marks = {}
+
+        async def trace(name, info):
+            marks[name] = time.monotonic()
+
+        request.extensions.setdefault("trace", trace)
+        try:
+            return await super().handle_async_request(request)
+        finally:
+            key = request.extensions.get("dropbear_request_id")
+            phases = connect_phases(marks)
+            if key is not None and phases:
+                self.connect_phases[key] = phases
+
+    def pop_phases(self, request_id):
+        return self.connect_phases.pop(request_id, None)
+
+
+def connect_phases(marks):
+    """Durations of the connection phases seen in httpcore trace marks, or None."""
+    phases = {}
+    for label, prefix in _CONNECT_PHASES:
+        started = marks.get(f"{prefix}.started")
+        if started is None:
+            continue
+        finished = marks.get(f"{prefix}.complete")
+        failed = marks.get(f"{prefix}.failed")
+        end = finished if finished is not None else failed
+        phases[f"{label}_s"] = None if end is None else round(end - started, 6)
+        phases[f"{label}_failed"] = failed is not None or end is None
+    return phases or None
 
 
 def _http_operation(request):
@@ -109,6 +162,7 @@ class PooledProvider:
         request_timeout=5,
         max_not_admitted_resubmissions=0,
         encoding_workers=4,
+        http2=False,
         expected_release_id=None,
         expected_release_sha256=None,
         client_factory=AsyncInferenceClient,
@@ -138,6 +192,8 @@ class PooledProvider:
         self.ready_timeout, self.recovery_timeout = ready_timeout, recovery_timeout
         self.close_timeout, self.poll_interval = close_timeout, poll_interval
         self.request_timeout = request_timeout
+        self.http2 = bool(http2)
+        self._transports = {}
         self.max_not_admitted_resubmissions = max_not_admitted_resubmissions
         self.expected_release_id = expected_release_id
         self.expected_release_sha256 = expected_release_sha256
@@ -317,9 +373,10 @@ class PooledProvider:
         )
 
     def _transport(self):
-        """Per-provider HTTP transport: connect-phase retries and lane-sized keepalive."""
-        return httpx.AsyncHTTPTransport(
+        """Per-client HTTP transport: connect-phase retries, lane-sized keepalive, tracing."""
+        return TracingTransport(
             retries=CONNECT_RETRIES,
+            http2=self.http2,
             limits=httpx.Limits(
                 max_keepalive_connections=self.concurrency + 8,
                 max_connections=2 * self.concurrency + 16,
@@ -327,14 +384,22 @@ class PooledProvider:
             ),
         )
 
-    def _client(self, api_base):
+    def _client(self, api_base, slot=None):
+        transport = self._transport()
+        if slot is not None:
+            self._transports[slot] = transport
         return self._factory(
             api_key=self.api_key,
             api_base=api_base,
             timeout=self.request_timeout,
             event_hooks={"response": [self._response_hook]},
-            transport=self._transport(),
+            transport=transport,
         )
+
+    def _connect_fields(self, slot, request_id):
+        transport = self._transports.get(slot)
+        phases = transport.pop_phases(request_id) if transport is not None else None
+        return {"connection_reused": phases is None, **(phases or {})}
 
     async def _create(self):
         self._create_attempted = True
@@ -495,7 +560,7 @@ class PooledProvider:
                         raise RuntimeError(f"Deployment became {value['status']} before readiness")
                     await asyncio.sleep(self.poll_interval)
                 for _ in range(self.concurrency):
-                    self._clients.append(self._client(value["api_base"]))
+                    self._clients.append(self._client(value["api_base"], slot=len(self._clients)))
                 discovery_started = time.monotonic()
                 connections = await asyncio.gather(
                     *(client.connect() for client in self._clients), return_exceptions=True
@@ -714,6 +779,7 @@ class PooledProvider:
                         response_received=result is not None,
                         **error_fields,
                         journal_before_post_s=journal_before_post_s,
+                        **self._connect_fields(slot, identity["request_id"]),
                         **correlation,
                     )
                 resolution_source = "predict"

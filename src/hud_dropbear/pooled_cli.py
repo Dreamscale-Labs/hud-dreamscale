@@ -257,6 +257,7 @@ async def evaluate(args):
         max_not_admitted_resubmissions=args.max_not_admitted_resubmissions,
         expected_release_id=args.expected_release_id,
         expected_release_sha256=args.expected_release_sha256,
+        http2=args.http2,
     )
     runtimes = RuntimePool(
         placement,
@@ -282,6 +283,7 @@ async def evaluate(args):
         "job_start",
         runtime=args.runtime,
         concurrency=args.concurrency,
+        http2=args.http2,
         expected_episodes=len(rows),
         episodes_per_lane=args.episodes_per_lane,
         max_not_admitted_resubmissions=args.max_not_admitted_resubmissions,
@@ -452,6 +454,12 @@ def parser():
         default=MAX_STEPS,
         metavar="1..600",
         help="Lower limits are smoke tests, not demo acceptance",
+    )
+    p.add_argument(
+        "--http2",
+        action="store_true",
+        default=os.environ.get("HUD_DROPBEAR_HTTP2", "") == "1",
+        help="Multiplex each lane's inference requests over HTTP/2 (also HUD_DROPBEAR_HTTP2=1)",
     )
     p.add_argument("--startup-timeout", type=float, default=1000)
     p.add_argument("--rollout-timeout", type=float, default=900)

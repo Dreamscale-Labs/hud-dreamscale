@@ -732,3 +732,91 @@ async def test_provider_clients_get_connect_retries_and_lane_sized_keepalive():
     assert pool._retries == pooled.CONNECT_RETRIES == 3
     assert pool._max_keepalive_connections == 72 and pool._max_connections == 144
     assert pool._keepalive_expiry == pooled.KEEPALIVE_EXPIRY_S == 900.0
+
+
+async def test_tracing_transport_records_connect_phases_only_for_new_connections():
+    import asyncio
+
+    from hud_dropbear.pooled import TracingTransport, connect_phases
+
+    async def handle(reader, writer):
+        while True:
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = await reader.read(65536)
+                if not chunk:
+                    writer.close()
+                    return
+                head += chunk
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await writer.drain()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    transport = TracingTransport(retries=0)
+    try:
+        async with httpx.AsyncClient(transport=transport) as client:
+            first = await client.get(
+                f"http://127.0.0.1:{port}/", extensions={"dropbear_request_id": "r1"}
+            )
+            second = await client.get(
+                f"http://127.0.0.1:{port}/", extensions={"dropbear_request_id": "r2"}
+            )
+        assert first.status_code == second.status_code == 200
+        phases = transport.pop_phases("r1")
+        assert phases["connect_tcp_failed"] is False and phases["connect_tcp_s"] >= 0
+        assert "start_tls_s" not in phases  # plain HTTP: no TLS phase
+        assert transport.pop_phases("r2") is None  # keep-alive reuse emits no connect events
+        assert transport.pop_phases("r1") is None  # popped once
+    finally:
+        server.close()
+        await server.wait_closed()
+        await transport.aclose()
+
+
+async def test_tracing_transport_attributes_failed_connections():
+    import socket
+
+    from hud_dropbear.pooled import TracingTransport
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    transport = TracingTransport(retries=0)
+    try:
+        async with httpx.AsyncClient(transport=transport, timeout=2) as client:
+            with pytest.raises(httpx.ConnectError):
+                await client.get(
+                    f"http://127.0.0.1:{port}/", extensions={"dropbear_request_id": "bad"}
+                )
+        phases = transport.pop_phases("bad")
+        assert phases["connect_tcp_failed"] is True and phases["connect_tcp_s"] >= 0
+    finally:
+        await transport.aclose()
+
+
+def test_connect_phases_from_trace_marks():
+    from hud_dropbear.pooled import connect_phases
+
+    assert connect_phases({}) is None
+    marks = {
+        "connection.connect_tcp.started": 10.0,
+        "connection.connect_tcp.complete": 10.25,
+        "connection.start_tls.started": 10.25,
+    }
+    assert connect_phases(marks) == {
+        "connect_tcp_s": 0.25,
+        "connect_tcp_failed": False,
+        "start_tls_s": None,
+        "start_tls_failed": True,
+    }
+
+
+def test_provider_transport_is_http2_capable_when_requested():
+    from hud_dropbear.pooled import PooledProvider, TracingTransport
+
+    provider = PooledProvider(concurrency=2, http2=True)
+    transport = provider._transport()
+    assert isinstance(transport, TracingTransport)
+    assert transport._pool._http2 is True
+    assert PooledProvider(concurrency=2)._transport()._pool._http2 is False
