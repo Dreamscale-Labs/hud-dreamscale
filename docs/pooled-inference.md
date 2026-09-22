@@ -152,6 +152,23 @@ H100 worker; reserved capacity is rounded up to a multiple of eight. Requesting
 three environments therefore still reserves one worker. These are independent
 closed-loop simulators, not one observation copied into multiple requests.
 
+### Initial request staggering
+
+The agent delays each lane's first inference by `(lane_id % 8) * 125 ms`: the
+first lane on each H100 starts immediately, and the eighth waits 875 ms. The
+offset is applied after that lane's first model input is ready, once per job;
+later inference calls and episode resets have no added wait. There is no
+all-lanes barrier, user setting, or recurring rate limiter. Partial groups use
+the same offsets for their active lanes. The simulator remains paused awaiting
+its action, so this does not change the 20 Hz simulated control rate, ten-action
+chunks, observations or noise seeds.
+
+`initial_inference_stagger` records the requested and actual wait plus completion
+or cancellation. The first model-call and episode elapsed times **include** this
+wait. Startup, network and reset variability can change actual request spacing;
+this is an initial burst mitigation, not a guarantee of persistent phase spacing
+or a claim of measured GPU latency improvement.
+
 The CLI defaults to six sequential episodes for one lane and two episodes per
 lane for every other width. Frozen cases cycle through `libero_spatial`
 task-order0, tasks0–2 and initial states0–1. Each row records task name, seed,

@@ -54,6 +54,8 @@ async def main(
         RuntimePool(HUDRuntime(), rows, concurrency=8) as runtimes,
     ):
         await registry.validate_ready()
+        # Initial inference offsets are automatic: 0..875 ms per eight-lane GPU
+        # group, once per job. Later calls remain simulator-driven and unpaced.
         agent = PooledRobotAgent(provider=provider, runtimes=runtimes)
         job = await Job.start("dropbear-libero-parallel")
         await run_cohort(

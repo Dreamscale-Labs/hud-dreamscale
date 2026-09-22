@@ -92,11 +92,15 @@ async def local_pool(rows, *, emit=None):
         yield pool, bridges
 
 
-async def test_two_parallel_lanes_reuse_with_real_hud_wire_grading_and_video(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stagger_step_s", [0.0, 0.125])
+async def test_two_parallel_lanes_reuse_with_real_hud_wire_grading_and_video(
+    tmp_path, monkeypatch, stagger_step_s
+):
     import av
     from hud.settings import settings
 
     monkeypatch.setattr(settings, "telemetry_local_dir", str(tmp_path / "traces"))
+    monkeypatch.setattr("hud_dropbear.pooled_agent._INITIAL_STAGGER_STEP_S", stagger_step_s)
     evidence = Evidence(tmp_path / "timings.jsonl")
     rows = cohort_tasks(2, max_steps=3)
     provider = FakeProvider(2)
@@ -105,7 +109,18 @@ async def test_two_parallel_lanes_reuse_with_real_hud_wire_grading_and_video(tmp
         job = await Taskset("pooled-wire", rows).run(agent, runtime=pool, max_concurrent=2)
         summary = summarize_cohort(job, rows, evidence.rows)
         assert summary["successes"] == 4 and summary["integration_errors"] == 0
-        assert provider.peak == 2 and provider.counts == [2, 2]
+        assert provider.counts == [2, 2]
+        if stagger_step_s == 0:
+            assert provider.peak == 2  # Preserve the unstaggered concurrent execution check.
+        else:
+            assert 1 <= provider.peak <= 2
+        waits = [row for row in evidence.rows if row["event"] == "initial_inference_stagger"]
+        assert len(waits) == 2  # Two episodes per lane do not repeat the delay.
+        assert {row["lane_id"]: row["requested_delay_s"] for row in waits} == {
+            0: 0.0,
+            1: stagger_step_s,
+        }
+        assert all(row["outcome"] == "completed" for row in waits)
         assert len({call["episode_id"] for call in provider.calls}) == 4
         assert {call["trace_id"] for call in provider.calls} == {run.trace_id for run in job.runs}
         for slot, bridge in bridges.items():
@@ -155,6 +170,58 @@ async def test_one_failed_lane_does_not_contaminate_other_lane():
     assert len({row["episode_id"] for row in attempts}) == 4
 
 
+@pytest.mark.parametrize("stagger_step_s", [0.0, 0.125])
+async def test_eight_lane_control_and_stagger_with_real_hud_wire(
+    tmp_path, monkeypatch, stagger_step_s
+):
+    from hud.eval.job import Job
+    from hud.settings import settings
+
+    monkeypatch.setattr(settings, "telemetry_local_dir", str(tmp_path / "traces"))
+    monkeypatch.setattr("hud_dropbear.pooled_agent._INITIAL_STAGGER_STEP_S", stagger_step_s)
+    evidence = Evidence(tmp_path / "timings.jsonl")
+    rows = cohort_tasks(8, max_steps=3)
+    provider = FakeProvider(8)
+    original_predict = provider.predict
+
+    async def predict(**kwargs):
+        evidence.emit(
+            "test_provider_submit", lane_id=kwargs["slot"], episode_id=kwargs["episode_id"]
+        )
+        return await original_predict(**kwargs)
+
+    provider.predict = predict
+    job = await Job.start("eight-lane-startup")
+    try:
+        async with local_pool(rows, emit=evidence.emit) as (pool, bridges):
+            agent = PooledRobotAgent(
+                provider=provider, runtimes=pool, max_steps=3, emit=evidence.emit
+            )
+            await run_cohort(agent, rows, runtime=pool, job=job, concurrency=8)
+            summary = summarize_cohort(job, rows, evidence.rows)
+            assert summary["successes"] == 16 and summary["integration_errors"] == 0
+            assert provider.counts == [2] * 8
+        assert all(bridge._registry.all_free for bridge in bridges.values())
+        waits = [row for row in evidence.rows if row["event"] == "initial_inference_stagger"]
+        assert len(waits) == 8
+        inputs = {
+            row["episode_id"]: row["monotonic_s"]
+            for row in evidence.rows
+            if row["event"] == "episode_first_model_input"
+        }
+        posts = {
+            row["episode_id"]: row["monotonic_s"]
+            for row in evidence.rows
+            if row["event"] == "test_provider_submit"
+        }
+        for row in waits:
+            delay = row["lane_id"] * stagger_step_s
+            assert row["requested_delay_s"] == delay and row["outcome"] == "completed"
+            assert posts[row["episode_id"]] - inputs[row["episode_id"]] >= delay
+    finally:
+        evidence.close()
+
+
 async def test_cancelled_episode_releases_every_claim():
     rows = cohort_tasks(2, max_steps=3)
     provider = FakeProvider(2, wait=True)
@@ -175,6 +242,37 @@ async def test_cancelled_episode_releases_every_claim():
     # Cancellation during task setup can precede RobotAgent.connect. The job's
     # owner must close the runtime to release that not-yet-connected claim too.
     assert all(bridge._registry.all_free for bridge in bridges.values())
+
+
+async def test_cancel_during_initial_stagger_releases_hud_claim_without_submission(monkeypatch):
+    monkeypatch.setattr("hud_dropbear.pooled_agent._INITIAL_STAGGER_STEP_S", 100.0)
+    rows = cohort_tasks(2, max_steps=3)
+    provider = FakeProvider(2, wait=True)
+    events = []
+    async with local_pool(rows) as (pool, bridges):
+        agent = PooledRobotAgent(
+            provider=provider,
+            runtimes=pool,
+            max_steps=3,
+            emit=lambda event, **fields: events.append((event, fields)),
+        )
+        task = asyncio.create_task(
+            Taskset("stagger-cancel", rows).run(agent, runtime=pool, max_concurrent=2)
+        )
+        async with asyncio.timeout(10):
+            while not any(
+                event == "episode_first_model_input" and fields["lane_id"] == 1
+                for event, fields in events
+            ):
+                await asyncio.sleep(0.001)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert provider.active == 0
+        assert all(call["slot"] == 0 for call in provider.calls)
+    assert all(bridge._registry.all_free for bridge in bridges.values())
+    waits = [fields for event, fields in events if event == "initial_inference_stagger"]
+    assert any(row["lane_id"] == 1 and row["outcome"] == "cancelled" for row in waits)
 
 
 def test_profile_rejects_legacy_resolution_and_invalid_quaternion():
