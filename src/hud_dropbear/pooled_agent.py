@@ -23,6 +23,8 @@ from .contract import (
     finite_array,
 )
 
+_INITIAL_STAGGER_STEP_S = 0.125
+
 
 @dataclass(frozen=True)
 class PooledInput:
@@ -80,10 +82,13 @@ class PooledLiberoAdapter(Adapter):
 
 
 class PooledModel(Model):
-    def __init__(self, provider, *, slot, episode_id, trace_id, seed, emit, fields):
+    def __init__(
+        self, provider, *, slot, episode_id, trace_id, seed, emit, fields, before_first=None
+    ):
         self.provider = provider
         self.slot, self.episode_id, self.trace_id = slot, episode_id, trace_id
         self.seed, self.emit, self.fields = seed, emit, fields
+        self._before_first = before_first
         self.calls = 0
 
     def infer(self, batch):
@@ -95,6 +100,8 @@ class PooledModel(Model):
         started = time.monotonic()
         inference_index, outcome = self.calls, "error"
         try:
+            if self.calls == 0 and self._before_first is not None:
+                await self._before_first()
             actions = await self.provider.predict(
                 slot=self.slot,
                 observation=batch.observation,
@@ -161,6 +168,32 @@ class PooledRobotAgent(Agent):
             raise ValueError("max_steps must be between 1 and 600")
         self.provider, self.runtimes, self.max_steps = provider, runtimes, max_steps
         self.emit = emit or (lambda event, **fields: None)
+        self._staggered = set()
+
+    async def _stagger_first_inference(self, job_id, slot, fields):
+        key = (job_id, slot)
+        if key in self._staggered:
+            return
+        # Consume before yielding: retries, cancellation and episode resets must
+        # not introduce a recurring delay. Slot groups match the server's slot // 8.
+        self._staggered.add(key)
+        delay = (slot % 8) * _INITIAL_STAGGER_STEP_S
+        started, outcome = time.monotonic(), "error"
+        try:
+            if delay:
+                await asyncio.sleep(delay)
+            outcome = "completed"
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            self.emit(
+                "initial_inference_stagger",
+                **fields,
+                requested_delay_s=delay,
+                duration_s=time.monotonic() - started,
+                outcome=outcome,
+            )
 
     async def __call__(self, run):
         lane = self.runtimes.lane_for(run.runtime)
@@ -201,6 +234,7 @@ class PooledRobotAgent(Agent):
                 seed=int(columns.get("noise_seed", 0)),
                 emit=self.emit,
                 fields=fields,
+                before_first=lambda: self._stagger_first_inference(run.job_id, lane.slot, fields),
             )
             agent = _EpisodeAgent(model, max_steps=self.max_steps, emit=self.emit, fields=fields)
             # A final observation tick records the state after action 600.
