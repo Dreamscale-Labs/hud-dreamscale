@@ -36,11 +36,11 @@ async def ready_target_artifact(policy, *, client_factory=ControlPlaneClient):
         or session.region != policy.region
         or not session.target_key
     ):
-        raise ValueError("Cannot verify the active Dropbear session's target")
+        raise ValueError("Cannot verify the active Dreamscale session's target")
     targets = status.get(policy.model, {}).get("targets", {}).values()
     matches = [t for t in targets if t.get("target_key") == session.target_key]
     if len(matches) != 1:
-        raise ValueError("Cannot identify one Dropbear target for this session")
+        raise ValueError("Cannot identify one Dreamscale target for this session")
     target = matches[0]
     # worker_count includes disconnected or degraded registrations. The status
     # API selects worker_capabilities from the ready pool whenever it is nonempty.
@@ -67,7 +67,7 @@ def serving_identity(policy, *, resolved_artifact=None, control_hz=CONTROL_HZ):
     if config.rtc != "off" or config.calibration != "off":
         raise ValueError("The synchronous HUD baseline requires RTC and calibration off")
     if (policy.action_hz, policy.chunk_size) != (control_hz, CHUNK_SIZE):
-        raise ValueError("Dropbear's resolved LIBERO timing contract has changed")
+        raise ValueError("Dreamscale's resolved LIBERO timing contract has changed")
     fingerprint = (
         resolved_artifact["fingerprint"]
         if resolved_artifact is not None
@@ -79,7 +79,7 @@ def serving_identity(policy, *, resolved_artifact=None, control_hz=CONTROL_HZ):
         else config.tensorrt_artifact_id
     )
     if not fingerprint:
-        raise ValueError("Dropbear did not report its TensorRT artifact fingerprint")
+        raise ValueError("Dreamscale did not report its TensorRT artifact fingerprint")
     contracts = json.loads(files("hud_dropbear").joinpath("serving_contracts.json").read_text())
     artifact = contracts.get(artifact_id)
     if artifact is None or artifact["fingerprint"] != fingerprint:

@@ -1,13 +1,18 @@
-# hud-dropbear
+# HUD evaluations on Dreamscale
 
 Run [HUD robotics evaluations](https://docs.hud.ai/v6/advanced/robots) with
-Dropbear-hosted [MolmoAct2-LIBERO](https://huggingface.co/allenai/MolmoAct2-LIBERO)
+[Dreamscale](https://docs.dreamscalelabs.com)-hosted [MolmoAct2-LIBERO](https://huggingface.co/allenai/MolmoAct2-LIBERO)
 inference. HUD owns simulation, action execution, grading and video traces;
-Dropbear owns the model server. The agent needs no local GPU or model weights.
+Dreamscale owns the model server. The agent needs no local GPU or model weights.
 
 The [six-episode demo](docs/demo.md) records the validated taskset, all final
 qualification attempts and version pins. The final hosted run succeeded on all
 six episodes; this is an integration result, not a benchmark-wide accuracy claim.
+
+The package, CLI, Python module, container tag and HUD environment still use
+their original identifiers, and the pinned SDK is published under its original
+PyPI name. They change together in a later release so that existing environments,
+tasksets and scripts keep working. The commands below are exact.
 
 ## Install
 
@@ -17,13 +22,15 @@ Use Python 3.12 and [uv](https://docs.astral.sh/uv/):
 uv sync --locked
 ```
 
-Configure Dropbear with `uv run dropbear login` and HUD with `uv run hud login`.
-Existing SDK credentials are reused. Keep credentials outside the repository.
-Dropbear usage and HUD-hosted simulation incur their respective service charges.
+Create a Dreamscale API key at [app.dreamscalelabs.com](https://app.dreamscalelabs.com),
+then sign in with `uv run dropbear login` (the CLI of the pinned SDK 0.1.0a15) and
+configure HUD with `uv run hud login`. Existing SDK credentials are reused. Keep
+credentials outside the repository. Dreamscale usage and HUD-hosted simulation
+incur their respective service charges.
 
 The agent lock explicitly overrides NumPy to 2.2.6: OpenPI 0.1.2 declares NumPy
-<2, while Dropbear requires NumPy 2. We test the array codec and HUD protocol
-under this override. Ordinary `pip install` is not currently supported by those
+<2, while the Dreamscale SDK requires NumPy 2. We test the array codec and HUD
+protocol under this override. Ordinary `pip install` is not currently supported by those
 upstream dependency constraints. No global Python environment is changed.
 
 ## Local simulation
@@ -134,7 +141,7 @@ uv run hud-dropbear --runtime hud
 
 This uses [`HUDRuntime`](https://docs.hud.ai/v6/reference/runtime): the CPU
 environment runs on HUD, while the agent client runs on your machine and talks
-to Dropbear. The default inference region is Sydney; `--region us-west-2` selects
+to Dreamscale. The default inference region is Sydney; `--region us-west-2` selects
 Oregon. One connection is retained across the sequential episodes and closed at
 the end. Retaining it is billable; `keep_warm` is zero after close.
 
@@ -166,7 +173,7 @@ at table center, placing it on the plate.
 The environment uses 20 Hz actual control, ten settling steps, ten-action
 chunks and a 600-action limit. State is EEF XYZ, axis-angle radians and two
 gripper positions. Actions use LIBERO's native seven-value delta-EEF control.
-Raw 256×256 RGB agent/wrist cameras are passed to Dropbear, which performs its
+Raw 256×256 RGB agent/wrist cameras are passed to Dreamscale, which performs its
 rotation, resize and encoding once. HUD traces preserve the raw camera orientation.
 RTC and calibration are off because HUD drives a synchronous chunk loop.
 

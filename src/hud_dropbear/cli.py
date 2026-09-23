@@ -308,7 +308,7 @@ async def evaluate(args):
 
 
 def parser():
-    p = argparse.ArgumentParser(description="Evaluate MolmoAct2-LIBERO with HUD and Dropbear")
+    p = argparse.ArgumentParser(description="Evaluate MolmoAct2-LIBERO with HUD and Dreamscale")
     p.add_argument("--runtime", choices=("docker", "hud", "attached"), default="docker")
     p.add_argument("--image", default="hud-dropbear-libero:local")
     p.add_argument("--env-url", help="HUD control URL for --runtime attached")

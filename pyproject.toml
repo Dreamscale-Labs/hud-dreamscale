@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "hud-dropbear"
 version = "0.1.0"
-description = "HUD robotics evaluations powered by Dropbear inference"
+description = "HUD robotics evaluations powered by Dreamscale inference"
 requires-python = ">=3.12,<3.13"
 license = "MIT"
 readme = "README.md"

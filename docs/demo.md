@@ -3,7 +3,7 @@
 On 6 September 2026, the fixed six-episode HUD-hosted taskset completed with
 **six simulator-confirmed successes and zero integration errors**. HUD ran CPU
 LIBERO simulation, executed actions, graded outcomes and recorded both camera
-streams. Dropbear served the TensorRT model; the agent client needed no GPU.
+streams. Dreamscale served the TensorRT model; the agent client needed no GPU.
 
 This is an integration demonstration on three selected tasks and two initial
 states per task. It does not estimate accuracy across LIBERO or reproduce the
@@ -54,7 +54,7 @@ so an identical task selection does not promise identical actions.
 
 The simulator used native Linux/x86-64 CPU physics and OSMesa rendering. Inputs
 were raw 256×256 agent-view and wrist-view RGB frames plus EEF XYZ, axis-angle
-rotation and two gripper positions. Dropbear applied its LIBERO image transform
+rotation and two gripper positions. Dreamscale applied its LIBERO image transform
 once. HUD videos retain the raw simulator orientation; their displayed rotation
 does not indicate the model's final preprocessed orientation.
 
@@ -73,7 +73,7 @@ remain separate from this final qualification sequence.
 | --- | --- |
 | Integration source used for the run | `26873b5602db869a447613527e029539c21c3a51` |
 | Agent Python | 3.12 |
-| Dropbear SDK | `0.1.0a15` |
+| Dreamscale SDK (PyPI package `dropbear`) | `0.1.0a15` |
 | HUD SDK | `0b63b4d3b9acb6d095e0886e18b2c905219e1e5a` |
 | Agent NumPy override | `2.2.6` |
 | hf-libero / MuJoCo / robosuite | `0.1.3` / `3.3.7` / `1.4.1` |
