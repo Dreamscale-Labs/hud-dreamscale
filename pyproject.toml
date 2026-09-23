@@ -3,20 +3,20 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hud-dropbear"
+name = "hud-dreamscale"
 version = "0.1.0"
 description = "HUD robotics evaluations powered by Dreamscale inference"
 requires-python = ">=3.12,<3.13"
 license = "MIT"
 readme = "README.md"
 dependencies = [
-  "dropbear==0.1.0a15",
+  "dreamscale==0.1.0a26",
   "hud[robot] @ git+https://github.com/hud-evals/hud-python@0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
   "numpy==2.2.6",
 ]
 
 [project.scripts]
-hud-dropbear = "hud_dropbear.cli:main"
+hud-dreamscale = "hud_dreamscale.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.3,<9", "pytest-asyncio>=1,<2", "ruff>=0.12"]

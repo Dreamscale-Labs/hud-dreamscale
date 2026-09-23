@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from environments.libero.bridge import LiberoBridge
-from hud_dropbear.contract import CAMERAS, TASK_NAMES
+from hud_dreamscale.contract import CAMERAS, TASK_NAMES
 
 
 def main():

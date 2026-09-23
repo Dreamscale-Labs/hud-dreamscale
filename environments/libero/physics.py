@@ -3,7 +3,7 @@
 import platform
 import time
 
-from hud_dropbear.contract import validate_contact_height
+from hud_dreamscale.contract import validate_contact_height
 
 
 def check_contact_physics():

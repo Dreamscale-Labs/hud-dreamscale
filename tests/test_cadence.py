@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import numpy as np
 
 from environments.libero import bridge as module
-from hud_dropbear.cli import parser
-from hud_dropbear.contract import TASK_NAMES
+from hud_dreamscale.cli import parser
+from hud_dreamscale.contract import TASK_NAMES
 
 
 def test_default_cli_and_actual_simulator_use_reference_cadence(tmp_path, monkeypatch):

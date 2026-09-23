@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from hud_dropbear.cli import parser, selected_tasks
-from hud_dropbear.contract import TASK_SUITES
+from hud_dreamscale.cli import parser, selected_tasks
+from hud_dreamscale.contract import TASK_SUITES
 
 SOURCE = Path(__file__).resolve().parents[1] / "tasksets/five-suites.json"
 

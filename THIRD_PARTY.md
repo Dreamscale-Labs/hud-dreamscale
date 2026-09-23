@@ -8,7 +8,7 @@ simulator asset bundle or vendored SDK implementation.
 | Material | Pinned source | License information |
 | --- | --- | --- |
 | HUD SDK | [hud-python](https://github.com/hud-evals/hud-python/tree/0b63b4d3b9acb6d095e0886e18b2c905219e1e5a) | [MIT](https://github.com/hud-evals/hud-python/blob/0b63b4d3b9acb6d095e0886e18b2c905219e1e5a/LICENSE) |
-| Dreamscale SDK | [PyPI `dropbear` 0.1.0a15](https://pypi.org/project/dropbear/0.1.0a15/) | Apache-2.0, as included in the published wheel |
+| Dreamscale SDK | [PyPI `dreamscale` 0.1.0a26](https://pypi.org/project/dreamscale/0.1.0a26/) | Apache-2.0, as included in the published wheel |
 | OpenPI client | [PyPI 0.1.2](https://pypi.org/project/openpi-client/0.1.2/) | Apache-2.0, as included in the published wheel |
 | NumPy | [2.2.6](https://numpy.org/doc/2.2/license.html) in the agent; 1.26.4 in the simulator | BSD-3-Clause and bundled third-party notices |
 | LIBERO package | [hf-libero 0.1.3](https://pypi.org/project/hf-libero/0.1.3/), from [Hugging Face's LIBERO fork](https://github.com/huggingface/LIBERO) | MIT for the package; see its upstream notices |

@@ -9,7 +9,7 @@ import numpy as np
 from hud.environment.robot import RobotBridge
 
 from environments.libero.physics import check_contact_physics
-from hud_dropbear.contract import (
+from hud_dreamscale.contract import (
     CAMERAS,
     CONTROL_HZ,
     MAX_STEPS,
