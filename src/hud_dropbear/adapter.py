@@ -1,4 +1,4 @@
-"""Map HUD's explicit raw LIBERO contract to the published Dropbear SDK."""
+"""Map HUD's explicit raw LIBERO contract to the published Dreamscale SDK."""
 
 import hashlib
 from dataclasses import dataclass
