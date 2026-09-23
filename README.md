@@ -9,10 +9,10 @@ The [six-episode demo](docs/demo.md) records the validated taskset, all final
 qualification attempts and version pins. The final hosted run succeeded on all
 six episodes; this is an integration result, not a benchmark-wide accuracy claim.
 
-The package, CLI, Python module, container tag and HUD environment still use
-their original identifiers, and the pinned SDK is published under its original
-PyPI name. They change together in a later release so that existing environments,
-tasksets and scripts keep working. The commands below are exact.
+The package and CLI are `hud-dreamscale`, the Python module is `hud_dreamscale`,
+and the HUD environment is `dreamscale-libero`. Earlier releases used `dropbear`
+names throughout; they have no aliases, so redeploy the environment and update
+scripts and tasksets that name the old identifiers. The commands below are exact.
 
 ## Install
 
@@ -23,7 +23,7 @@ uv sync --locked
 ```
 
 Create a Dreamscale API key at [app.dreamscalelabs.com](https://app.dreamscalelabs.com),
-then sign in with `uv run dropbear login` (the CLI of the pinned SDK 0.1.0a15) and
+then sign in with `uv run dreamscale login` (the CLI of the pinned SDK 0.1.0a26) and
 configure HUD with `uv run hud login`. Existing SDK credentials are reused. Keep
 credentials outside the repository. Dreamscale usage and HUD-hosted simulation
 incur their respective service charges.
@@ -36,9 +36,9 @@ upstream dependency constraints. No global Python environment is changed.
 ## Local simulation
 
 ```sh
-docker build -f Dockerfile.hud -t hud-dropbear-libero:local .
-docker run --rm hud-dropbear-libero:local python -m environments.libero.preflight
-uv run hud-dropbear --runtime docker --task-ids 0 --init-state-ids 0
+docker build -f Dockerfile.hud -t hud-dreamscale-libero:local .
+docker run --rm hud-dreamscale-libero:local python -m environments.libero.preflight
+uv run hud-dreamscale --runtime docker --task-ids 0 --init-state-ids 0
 ```
 
 The container runs CPU MuJoCo physics and OSMesa rendering. Its separately
@@ -56,7 +56,7 @@ task and rejects invalid physics. The grade records the checked runtime and
 architecture. Run this inexpensive check independently with:
 
 ```sh
-docker run --rm hud-dropbear-libero:local python -m environments.libero.physics
+docker run --rm hud-dreamscale-libero:local python -m environments.libero.physics
 ```
 
 The corrected image has passed native Linux/amd64 CPU/OSMesa preflight and all
@@ -86,7 +86,7 @@ uv run --project environments/libero python -m environments.libero.bootstrap
 uv run --project environments/libero hud serve env.py --host 127.0.0.1 --port 8765
 ```
 
-Keep that server running and use `uv run hud-dropbear --runtime attached
+Keep that server running and use `uv run hud-dreamscale --runtime attached
 --env-url tcp://127.0.0.1:8765` in another terminal. The server and runner default
 to 20 Hz. This remains local simulation with HUD traces, not HUD-hosted execution.
 
@@ -98,13 +98,13 @@ the selected task and initial-state IDs to each suite while reusing one inferenc
 connection. For example, one episode per suite:
 
 ```sh
-uv run hud-dropbear --runtime hud --all-suites --task-ids 0 --init-state-ids 0
+uv run hud-dreamscale --runtime hud --all-suites --task-ids 0 --init-state-ids 0
 ```
 
 To choose a different task in each suite, use the portable HUD taskset:
 
 ```sh
-uv run hud-dropbear --runtime hud --taskset tasksets/five-suites.json
+uv run hud-dreamscale --runtime hud --taskset tasksets/five-suites.json
 ```
 
 It selects task 0 in the first four suites and task 50 (alphabet soup into basket) in
@@ -136,7 +136,7 @@ After local validation:
 
 ```sh
 uv run hud deploy . --no-env --runtime hud
-uv run hud-dropbear --runtime hud
+uv run hud-dreamscale --runtime hud
 ```
 
 This uses [`HUDRuntime`](https://docs.hud.ai/v6/reference/runtime): the CPU
@@ -205,11 +205,11 @@ repeats reuse the inference session; they do not prove parked-session reclaim.
 
 ```python
 from hud import HUDRuntime, Taskset
-from hud_dropbear import DropbearRobotAgent
-from hud_dropbear.cli import tasks
+from hud_dreamscale import DreamscaleRobotAgent
+from hud_dreamscale.cli import tasks
 
 async def evaluate():
-    async with DropbearRobotAgent() as agent:
+    async with DreamscaleRobotAgent() as agent:
         return await Taskset("libero-demo", tasks()).run(
             agent, runtime=HUDRuntime(), max_concurrent=1,
         )
@@ -222,7 +222,7 @@ camera/state/action contracts fail before actions are sent. The small
 `serving_contracts.json` registry ties verified TensorRT artifact fingerprints to
 checkpoint revisions; verify new build manifests before adding entries.
 
-On a cold start, SDK 0.1.0a15 can retain planned artifact metadata without a
+On a cold start, the SDK can retain planned artifact metadata without a
 fingerprint. The provider then reads the session's exact target through the
 SDK control client and accepts its reported artifact only when there is exactly
 one ready TensorRT worker and one active session. The sidecar records both the
@@ -234,7 +234,7 @@ workers or sessions make this fallback ambiguous and are rejected.
 ```sh
 uv run ruff check .
 uv run pytest -q
-HUD_DROPBEAR_IMAGE=hud-dropbear-libero:local uv run pytest -q tests/test_container.py
+HUD_DREAMSCALE_IMAGE=hud-dreamscale-libero:local uv run pytest -q tests/test_container.py
 ```
 
 Tests exercise the real HUD robot socket, claim/grade/release lifecycle, input

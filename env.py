@@ -4,12 +4,12 @@ from hud import Environment
 from hud.environment.robot import RobotEndpoint
 
 from environments.libero.bridge import LiberoBridge
-from hud_dropbear.contract import ENV_NAME, MAX_STEPS, TASK_SUITES
+from hud_dreamscale.contract import ENV_NAME, MAX_STEPS, TASK_SUITES
 
 
 def create_environment(endpoint=None):
     # HUD deploy discovers names statically, so the declaration must be literal.
-    environment = Environment(name="dropbear-libero")
+    environment = Environment(name="dreamscale-libero")
     assert environment.name == ENV_NAME
     endpoint = (endpoint or RobotEndpoint(LiberoBridge())).attach(environment)
 

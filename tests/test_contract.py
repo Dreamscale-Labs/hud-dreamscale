@@ -5,8 +5,8 @@ import pytest
 from hud.capabilities.robot import _packb, _unpackb
 from PIL import Image
 
-from hud_dropbear.adapter import LiberoAdapter
-from hud_dropbear.contract import CAMERAS, build_contract, state_from_raw
+from hud_dreamscale.adapter import LiberoAdapter
+from hud_dreamscale.contract import CAMERAS, build_contract, state_from_raw
 
 
 def observation():

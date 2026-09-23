@@ -18,7 +18,7 @@ from hud import DockerRuntime, HUDRuntime, Runtime, Task, Taskset
 from hud.settings import settings
 from hud.utils.platform import canonical_record_id
 
-from .agent import DropbearRobotAgent
+from .agent import DreamscaleRobotAgent
 from .contract import CONTROL_HZ, ENV_NAME, MAX_STEPS, TASK_SUITES
 from .platform import verify_platform
 from .telemetry import CURRENT_TASK, Evidence
@@ -143,7 +143,7 @@ def selected_tasks(args):
         raise ValueError("The taskset is empty")
     for row in rows:
         if row.env != ENV_NAME or row.id not in TASK_SUITES:
-            raise ValueError("Every row must select a pinned dropbear-libero suite")
+            raise ValueError("Every row must select a pinned dreamscale-libero suite")
         if row.runtime_config is not None or row.verifier is not None:
             raise ValueError("Taskset placement and grading must use the demo environment")
         if set(row.args) != {"task_id", "init_state_id", "seed", "max_steps"}:
@@ -225,11 +225,11 @@ async def evaluate(args):
             },
             versions={
                 n: importlib.metadata.version(n)
-                for n in ("hud-dropbear", "hud", "dropbear", "numpy")
+                for n in ("hud-dreamscale", "hud", "dreamscale", "numpy")
             },
         )
         async with (
-            DropbearRobotAgent(
+            DreamscaleRobotAgent(
                 region=args.region,
                 control_hz=args.control_hz,
                 emit=evidence.emit,
@@ -238,7 +238,7 @@ async def evaluate(args):
             job_runtime(runtime, rows[0], evidence.emit) as shared_runtime,
         ):
             job = await Taskset(
-                f"dropbear-{'all-suites' if len(suites) == 5 else suites[0]}-{args.runtime}", rows
+                f"dreamscale-{'all-suites' if len(suites) == 5 else suites[0]}-{args.runtime}", rows
             ).run(
                 agent,
                 runtime=MeasuredRuntime(shared_runtime, evidence.emit),
@@ -310,7 +310,7 @@ async def evaluate(args):
 def parser():
     p = argparse.ArgumentParser(description="Evaluate MolmoAct2-LIBERO with HUD and Dreamscale")
     p.add_argument("--runtime", choices=("docker", "hud", "attached"), default="docker")
-    p.add_argument("--image", default="hud-dropbear-libero:local")
+    p.add_argument("--image", default="hud-dreamscale-libero:local")
     p.add_argument("--env-url", help="HUD control URL for --runtime attached")
     p.add_argument("--suite", choices=TASK_SUITES, default="libero_spatial")
     p.add_argument("--all-suites", action="store_true", help="Evaluate all five LIBERO suites")

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from dropbear.libero import observe
+from dreamscale.libero import observe
 from hud.agents.robot.adapter import Adapter
 
 from .contract import CAMERAS, CHUNK_SIZE, build_contract, finite_array

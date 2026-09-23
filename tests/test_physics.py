@@ -2,7 +2,7 @@
 
 import pytest
 
-from hud_dropbear import contract
+from hud_dreamscale import contract
 
 
 @pytest.mark.parametrize("height", [0.9000337, 0.85, -0.00159, float("nan")])

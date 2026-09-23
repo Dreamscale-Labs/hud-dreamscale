@@ -6,9 +6,9 @@ import time
 from dataclasses import asdict
 from importlib.resources import files
 
-import dropbear
-from dropbear.config import load_config
-from dropbear.control import ControlPlaneClient
+import dreamscale
+from dreamscale.config import load_config
+from dreamscale.control import ControlPlaneClient
 from hud.agents.robot.agent import RobotAgent
 from hud.agents.robot.model import Model
 from hud.telemetry.context import get_current_trace_id
@@ -20,7 +20,7 @@ from .contract import CHECKPOINT, CHUNK_SIZE, CONTROL_HZ, MAX_STEPS, MODEL, REVI
 async def ready_target_artifact(policy, *, client_factory=ControlPlaneClient):
     """Resolve cold-session metadata against an unambiguous live worker snapshot.
 
-    SDK 0.1.0a15 can retain the planned configuration after cold startup. Never
+    The SDK can retain the planned configuration after cold startup. Never
     guess from a model name or an aggregate multi-worker status response.
     """
     config = load_config()
@@ -80,7 +80,7 @@ def serving_identity(policy, *, resolved_artifact=None, control_hz=CONTROL_HZ):
     )
     if not fingerprint:
         raise ValueError("Dreamscale did not report its TensorRT artifact fingerprint")
-    contracts = json.loads(files("hud_dropbear").joinpath("serving_contracts.json").read_text())
+    contracts = json.loads(files("hud_dreamscale").joinpath("serving_contracts.json").read_text())
     artifact = contracts.get(artifact_id)
     if artifact is None or artifact["fingerprint"] != fingerprint:
         raise ValueError("Unverified TensorRT artifact; verify its checkpoint manifest before use")
@@ -106,14 +106,14 @@ def serving_identity(policy, *, resolved_artifact=None, control_hz=CONTROL_HZ):
     }
 
 
-class DropbearModel(Model):
+class DreamscaleModel(Model):
     def __init__(self, policy, emit):
         self.policy = policy
         self.emit = emit
         self.trace_id = None
 
     def infer(self, batch):
-        raise TypeError("DropbearModel is async-only; use ainfer, without HUD BatchedModel")
+        raise TypeError("DreamscaleModel is async-only; use ainfer, without HUD BatchedModel")
 
     async def ainfer(self, batch):
         started = time.monotonic()
@@ -136,7 +136,7 @@ class DropbearModel(Model):
         return actions
 
 
-class DropbearRobotAgent(RobotAgent):
+class DreamscaleRobotAgent(RobotAgent):
     max_steps = MAX_STEPS
     log_every = 50
 
@@ -154,7 +154,7 @@ class DropbearRobotAgent(RobotAgent):
         self.control_hz = control_hz
         self.region = region
         self.emit = emit or (lambda event, **fields: None)
-        self._connector = connector or dropbear.aconnect
+        self._connector = connector or dreamscale.aconnect
         self._policy = None
         self._running = False
         self._action_limit = self.max_steps
@@ -217,7 +217,7 @@ class DropbearRobotAgent(RobotAgent):
             self.identity = serving_identity(
                 self._policy, resolved_artifact=resolved_artifact, control_hz=self.control_hz
             )
-            self.model = DropbearModel(self._policy, self.emit)
+            self.model = DreamscaleModel(self._policy, self.emit)
             self.emit("provider_ready", duration_s=time.monotonic() - started, **self.identity)
         except BaseException:
             await self._close_policy()
@@ -251,7 +251,7 @@ class DropbearRobotAgent(RobotAgent):
 
     async def __call__(self, run, *, max_steps=None):
         if self._connection_task is None or self._closed:
-            raise RuntimeError("Use 'async with DropbearRobotAgent() as agent' around the job")
+            raise RuntimeError("Use 'async with DreamscaleRobotAgent() as agent' around the job")
         if self._running:
             raise RuntimeError("This provider supports one rollout at a time; max_concurrent=1")
         self._running = True
@@ -270,7 +270,7 @@ class DropbearRobotAgent(RobotAgent):
             # submitted until backend/checkpoint identity has been verified.
             await asyncio.shield(self._connection_task)
             self.model.trace_id = self._trace_id
-            run.trace.extra["dropbear"] = dict(self.identity)
+            run.trace.extra["dreamscale"] = dict(self.identity)
             self._action_limit = self.max_steps if max_steps is None else max_steps
             # HUD records an observation at the beginning of each tick. Reserve
             # a final recording tick after the last permitted action; should_stop
@@ -289,7 +289,7 @@ class DropbearRobotAgent(RobotAgent):
             if self.identity is not None and self._policy is not None:
                 self.identity["final_transport"] = self._policy.transport_mode
                 self.identity["fallback_reason"] = getattr(self._policy, "fallback_reason", None)
-                run.trace.extra["dropbear"] = dict(self.identity)
+                run.trace.extra["dreamscale"] = dict(self.identity)
 
     def should_stop(self, obs, *, step, max_steps):
         if step == 1:

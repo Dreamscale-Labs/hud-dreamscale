@@ -9,7 +9,7 @@ import numpy as np
 MODEL = "molmoact2-libero"
 CHECKPOINT = "allenai/MolmoAct2-LIBERO"
 REVISION = "0d24a92bd1faf321ef497c3bbd5681af97c65aa2"
-ENV_NAME = "dropbear-libero"
+ENV_NAME = "dreamscale-libero"
 # LIBERO reference controller cadence. This is simulation time per action,
 # independent of network latency and the published SDK sim profile's default.
 CONTROL_HZ = 20
@@ -32,7 +32,7 @@ ACTION_NAMES = ["delta_x", "delta_y", "delta_z", "delta_rx", "delta_ry", "delta_
 TASK_SUITES = {
     suite: tuple(names)
     for suite, names in json.loads(
-        files("hud_dropbear").joinpath("task_manifest.json").read_text()
+        files("hud_dreamscale").joinpath("task_manifest.json").read_text()
     ).items()
 }
 TASK_NAMES = TASK_SUITES["libero_spatial"]

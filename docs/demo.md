@@ -17,7 +17,7 @@ Then deploy the environment and run the default taskset:
 
 ```sh
 uv run hud deploy . --no-env --runtime hud
-uv run hud-dropbear --runtime hud --suite libero_spatial \
+uv run hud-dreamscale --runtime hud --suite libero_spatial \
   --task-ids 0 1 2 --init-state-ids 0 1 --control-hz 20 --max-steps 600
 ```
 

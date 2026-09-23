@@ -8,8 +8,8 @@ from hud import DockerRuntime, Taskset
 from hud.agents.robot.agent import RobotAgent
 from hud.agents.robot.model import Model
 
-from hud_dropbear.adapter import LiberoAdapter
-from hud_dropbear.cli import tasks
+from hud_dreamscale.adapter import LiberoAdapter
+from hud_dreamscale.cli import tasks
 
 
 class HoldModel(Model):
@@ -20,13 +20,13 @@ class HoldModel(Model):
         return np.tile(np.array([0.0] * 6 + [-1.0], dtype=np.float32), (10, 1))
 
 
-@pytest.mark.skipif(not os.getenv("HUD_DROPBEAR_IMAGE"), reason="set HUD_DROPBEAR_IMAGE")
+@pytest.mark.skipif(not os.getenv("HUD_DREAMSCALE_IMAGE"), reason="set HUD_DREAMSCALE_IMAGE")
 async def test_cpu_container_claim_render_action_and_grade():
     agent = RobotAgent()
     agent.adapter = LiberoAdapter()
     agent.model = HoldModel()
     job = await Taskset("container-preflight", tasks([0], [0], max_steps=2)).run(
-        agent, runtime=DockerRuntime(os.environ["HUD_DROPBEAR_IMAGE"]), rollout_timeout=600
+        agent, runtime=DockerRuntime(os.environ["HUD_DREAMSCALE_IMAGE"]), rollout_timeout=600
     )
     assert len(job.runs) == 1
     run = job.runs[0]

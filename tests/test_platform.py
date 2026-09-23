@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hud_dropbear.contract import CAMERAS
-from hud_dropbear.platform import verify_platform
+from hud_dreamscale.contract import CAMERAS
+from hud_dreamscale.platform import verify_platform
 
 
 @pytest.mark.parametrize(

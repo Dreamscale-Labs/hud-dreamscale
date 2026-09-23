@@ -5,10 +5,10 @@ __version__ = "0.1.0"
 
 def __getattr__(name):
     # The CPU simulator imports only the shared contract, without Dreamscale SDK dependencies.
-    if name == "DropbearRobotAgent":
-        from .agent import DropbearRobotAgent
+    if name == "DreamscaleRobotAgent":
+        from .agent import DreamscaleRobotAgent
 
-        return DropbearRobotAgent
+        return DreamscaleRobotAgent
     if name == "LiberoAdapter":
         from .adapter import LiberoAdapter
 
@@ -16,4 +16,4 @@ def __getattr__(name):
     raise AttributeError(name)
 
 
-__all__ = ["DropbearRobotAgent", "LiberoAdapter"]
+__all__ = ["DreamscaleRobotAgent", "LiberoAdapter"]

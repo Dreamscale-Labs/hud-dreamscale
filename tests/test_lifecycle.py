@@ -4,16 +4,16 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from dropbear.policy.types import ActionChunkResult, ActionTiming
+from dreamscale.policy.types import ActionChunkResult, ActionTiming
 from hud import LocalRuntime, Taskset
 from hud.environment.robot import RobotBridge, RobotEndpoint
 from hud.eval import Shared
 
 from env import create_environment
-from hud_dropbear.agent import DropbearRobotAgent
-from hud_dropbear.cli import MeasuredRuntime, job_runtime, startup_metrics, summarize, tasks
-from hud_dropbear.contract import CAMERAS, CONTROL_HZ, MODEL, build_contract
-from hud_dropbear.video import export_videos
+from hud_dreamscale.agent import DreamscaleRobotAgent
+from hud_dreamscale.cli import MeasuredRuntime, job_runtime, startup_metrics, summarize, tasks
+from hud_dreamscale.contract import CAMERAS, CONTROL_HZ, MODEL, build_contract
+from hud_dreamscale.video import export_videos
 
 
 class FakePolicy:
@@ -109,7 +109,7 @@ async def test_real_hud_wire_grading_reuse_and_fresh_chunks(tmp_path, monkeypatc
         return policy
 
     async with environment() as (env, bridge):
-        async with DropbearRobotAgent(
+        async with DreamscaleRobotAgent(
             connector=connect, emit=lambda e, **f: events.append((e, f))
         ) as a:
             job = await Taskset("test", tasks([0], [0, 1], max_steps=3)).run(
@@ -151,7 +151,7 @@ async def test_action_cap_records_final_frame_without_an_extra_action(
         return policy
 
     async with environment() as (env, bridge):
-        async with DropbearRobotAgent(connector=connect) as agent:
+        async with DreamscaleRobotAgent(connector=connect) as agent:
             agent.max_steps = action_limit
             job = await Taskset("action-cap", tasks([0], [0], max_steps=3)).run(
                 agent, runtime=LocalRuntime(env)
@@ -173,7 +173,7 @@ async def test_malformed_model_chunk_never_reaches_simulator():
         return policy
 
     async with environment() as (env, bridge):
-        async with DropbearRobotAgent(connector=connect) as a:
+        async with DreamscaleRobotAgent(connector=connect) as a:
             job = await Taskset("test", tasks([0], [0], max_steps=3)).run(
                 a, runtime=LocalRuntime(env)
             )
@@ -190,7 +190,7 @@ async def test_goal_template_preserves_distinct_task_selections():
 
     selected = tasks([0, 5, 7], [0], suite="libero_goal", max_steps=3)
     async with environment() as (env, bridge):
-        async with DropbearRobotAgent(connector=connect) as agent:
+        async with DreamscaleRobotAgent(connector=connect) as agent:
             job = await Taskset("goal-contract", selected).run(agent, runtime=LocalRuntime(env))
         assert len(job.runs) == 3 and all(not run.trace.is_error for run in job.runs)
         assert [row["suite_name"] for row in bridge.selections] == ["libero_goal"] * 3
@@ -210,7 +210,7 @@ async def test_explicit_control_rate_must_match_simulator(sim_hz):
         return policy
 
     async with environment(control_hz=sim_hz) as (env, bridge):
-        async with DropbearRobotAgent(connector=connect, control_hz=20) as agent:
+        async with DreamscaleRobotAgent(connector=connect, control_hz=20) as agent:
             job = await Taskset("cadence", tasks([0], [0], max_steps=3)).run(
                 agent, runtime=LocalRuntime(env)
             )
@@ -231,7 +231,7 @@ async def test_inference_failure_releases_claim_and_session():
         return policy
 
     async with environment() as (env, bridge):
-        async with DropbearRobotAgent(connector=connect) as agent:
+        async with DreamscaleRobotAgent(connector=connect) as agent:
             job = await Taskset("test", tasks([0], [0])).run(agent, runtime=LocalRuntime(env))
         assert summarize(job)["integration_errors"] == 1
         assert bridge.actions == [] and bridge._registry.all_free
@@ -247,7 +247,7 @@ async def test_cancellation_releases_inference_session():
     async with environment() as (env, bridge):
 
         async def run():
-            async with DropbearRobotAgent(connector=connect) as agent:
+            async with DreamscaleRobotAgent(connector=connect) as agent:
                 await Taskset("test", tasks([0], [0])).run(agent, runtime=LocalRuntime(env))
 
         task = asyncio.create_task(run())
@@ -267,7 +267,7 @@ async def test_wrong_backend_closes_before_any_actions():
         return policy
 
     with pytest.raises(ValueError, match="TensorRT"):
-        async with DropbearRobotAgent(connector=connect):
+        async with DreamscaleRobotAgent(connector=connect):
             pass
     assert policy.calls == 0 and policy.closed == 1
 
@@ -280,7 +280,7 @@ async def test_unknown_artifact_is_rejected():
         return policy
 
     with pytest.raises(ValueError, match="Unverified TensorRT"):
-        async with DropbearRobotAgent(connector=connect):
+        async with DreamscaleRobotAgent(connector=connect):
             pass
     assert policy.calls == 0 and policy.closed == 1
 
@@ -298,7 +298,7 @@ def test_timing_joins_by_task_after_a_failed_environment():
 
 
 async def test_all_five_suite_templates_keep_selection_and_reset_queues():
-    from hud_dropbear.contract import TASK_SUITES
+    from hud_dreamscale.contract import TASK_SUITES
 
     policy = FakePolicy()
 
@@ -307,7 +307,7 @@ async def test_all_five_suite_templates_keep_selection_and_reset_queues():
 
     rows = [row for suite in TASK_SUITES for row in tasks([0], [0], suite=suite, max_steps=3)]
     async with environment() as (env, bridge):
-        async with DropbearRobotAgent(connector=connect) as agent:
+        async with DreamscaleRobotAgent(connector=connect) as agent:
             job = await Taskset("five-suite-contract", rows).run(agent, runtime=LocalRuntime(env))
         assert len(job.runs) == 5
         assert all(not run.trace.is_error and run.reward == 1 for run in job.runs)
@@ -317,8 +317,8 @@ async def test_all_five_suite_templates_keep_selection_and_reset_queues():
 
 
 def test_libero_90_selection_preserves_last_pinned_task():
-    from hud_dropbear.cli import parser
-    from hud_dropbear.contract import TASK_SUITES
+    from hud_dreamscale.cli import parser
+    from hud_dreamscale.contract import TASK_SUITES
 
     args = parser().parse_args(["--suite", "libero_90", "--task-ids", "89"])
     assert args.task_ids == [89]
@@ -327,7 +327,7 @@ def test_libero_90_selection_preserves_last_pinned_task():
 
 
 async def test_background_connection_overlaps_shared_environment_and_resets_episodes():
-    from hud_dropbear.contract import TASK_SUITES
+    from hud_dreamscale.contract import TASK_SUITES
 
     policy = FakePolicy()
     environment_ready = asyncio.Event()
@@ -359,7 +359,7 @@ async def test_background_connection_overlaps_shared_environment_and_resets_epis
 
         rows = [row for suite in TASK_SUITES for row in tasks([0], [0], suite=suite)]
         async with (
-            DropbearRobotAgent(connector=connect, emit=emit, connect_in_background=True) as agent,
+            DreamscaleRobotAgent(connector=connect, emit=emit, connect_in_background=True) as agent,
             job_runtime(provider, rows[0], emit) as shared,
         ):
             job = await Taskset("overlapped-reuse", rows).run(
@@ -384,7 +384,7 @@ async def test_cancel_during_background_connection_finishes_connector_cleanup():
             cleaned.set()
 
     async def run():
-        async with DropbearRobotAgent(connector=connect, connect_in_background=True):
+        async with DreamscaleRobotAgent(connector=connect, connect_in_background=True):
             await asyncio.Event().wait()
 
     running = asyncio.create_task(run())
@@ -403,7 +403,7 @@ async def test_background_identity_failure_closes_without_sending_actions():
         return policy
 
     async with environment() as (env, bridge):
-        async with DropbearRobotAgent(connector=connect, connect_in_background=True) as agent:
+        async with DreamscaleRobotAgent(connector=connect, connect_in_background=True) as agent:
             job = await Taskset("bad-background-identity", tasks([0], [0])).run(
                 agent, runtime=LocalRuntime(env)
             )
@@ -413,7 +413,7 @@ async def test_background_identity_failure_closes_without_sending_actions():
 
 
 async def test_measured_shared_cleanup_preserves_the_original_inference_error():
-    from hud_dropbear.telemetry import CURRENT_TASK
+    from hud_dreamscale.telemetry import CURRENT_TASK
 
     policy = FakePolicy(bad=True)
 
@@ -422,7 +422,7 @@ async def test_measured_shared_cleanup_preserves_the_original_inference_error():
 
     async with environment() as (env, bridge):
         async with (
-            DropbearRobotAgent(connector=connect) as agent,
+            DreamscaleRobotAgent(connector=connect) as agent,
             Shared(LocalRuntime(env), width=1) as shared,
         ):
             job = await Taskset("malformed-shared-response", tasks([0], [0])).run(

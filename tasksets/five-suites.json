@@ -1,6 +1,6 @@
 [
   {
-    "env": "dropbear-libero",
+    "env": "dreamscale-libero",
     "id": "libero_spatial",
     "args": {
       "task_id": 0,
@@ -15,7 +15,7 @@
     }
   },
   {
-    "env": "dropbear-libero",
+    "env": "dreamscale-libero",
     "id": "libero_object",
     "args": {
       "task_id": 0,
@@ -30,7 +30,7 @@
     }
   },
   {
-    "env": "dropbear-libero",
+    "env": "dreamscale-libero",
     "id": "libero_goal",
     "args": {
       "task_id": 0,
@@ -45,7 +45,7 @@
     }
   },
   {
-    "env": "dropbear-libero",
+    "env": "dreamscale-libero",
     "id": "libero_10",
     "args": {
       "task_id": 0,
@@ -60,7 +60,7 @@
     }
   },
   {
-    "env": "dropbear-libero",
+    "env": "dreamscale-libero",
     "id": "libero_90",
     "args": {
       "task_id": 50,
