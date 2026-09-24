@@ -231,6 +231,11 @@ workers or sessions make this fallback ambiguous and are rejected.
 
 ## Verify
 
+For independent concurrent simulators sharing HTTP inference, see the additive
+[pooled integration](docs/pooled-inference.md). The scalar CLI and environment
+above retain their existing behavior; pooled serving uses a separate raw360
+environment and the `PooledProvider`/`PooledRobotAgent`/`RuntimePool` interfaces.
+
 ```sh
 uv run ruff check .
 uv run pytest -q

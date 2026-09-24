@@ -13,7 +13,25 @@ def __getattr__(name):
         from .adapter import LiberoAdapter
 
         return LiberoAdapter
+    if name == "PooledProvider":
+        from .pooled import PooledProvider
+
+        return PooledProvider
+    if name == "PooledRobotAgent":
+        from .pooled_agent import PooledRobotAgent
+
+        return PooledRobotAgent
+    if name == "RuntimePool":
+        from .runtime_pool import RuntimePool
+
+        return RuntimePool
     raise AttributeError(name)
 
 
-__all__ = ["DreamscaleRobotAgent", "LiberoAdapter"]
+__all__ = [
+    "DreamscaleRobotAgent",
+    "LiberoAdapter",
+    "PooledProvider",
+    "PooledRobotAgent",
+    "RuntimePool",
+]
