@@ -10,7 +10,7 @@ requires-python = ">=3.12,<3.13"
 license = "MIT"
 readme = "README.md"
 dependencies = [
-  "dreamscale==0.1.0a26",
+  "dreamscale==0.1.0a27",
   "hud[robot] @ git+https://github.com/hud-evals/hud-python@0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
   "numpy==2.2.6",
 ]
