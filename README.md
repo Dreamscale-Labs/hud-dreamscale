@@ -23,7 +23,7 @@ uv sync --locked
 ```
 
 Create a Dreamscale API key at [app.dreamscalelabs.com](https://app.dreamscalelabs.com),
-then sign in with `uv run dreamscale login` (the CLI of the pinned SDK 0.1.0a26) and
+then sign in with `uv run dreamscale login` (the CLI of the pinned SDK 0.1.0a27) and
 configure HUD with `uv run hud login`. Existing SDK credentials are reused. Keep
 credentials outside the repository. Dreamscale usage and HUD-hosted simulation
 incur their respective service charges.
