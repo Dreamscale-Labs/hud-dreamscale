@@ -16,6 +16,7 @@ from hud import HUDRuntime
 from hud.agents.base import Agent
 from hud.agents.robot.agent import RobotAgent
 from hud.capabilities.robot import RobotClient
+from hud.telemetry.context import get_current_trace_id
 
 from .campaign import task_rows
 from .campaign_run import verify_hud_build
@@ -53,7 +54,7 @@ class Capture(Agent):
                     {
                         "purpose": "release_health_fixture_not_scored",
                         "model": self.model,
-                        "hud_trace_id": run.trace_id,
+                        "hud_trace_id": run.trace_id or get_current_trace_id(),
                         "captured_at": time.time(),
                         "health_request": request,
                         "input_sha256": batch.input_sha256,
