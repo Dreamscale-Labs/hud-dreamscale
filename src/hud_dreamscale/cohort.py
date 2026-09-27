@@ -3,8 +3,10 @@
 import asyncio
 import hashlib
 import json
+from uuid import uuid4
 
-from hud import Task, Taskset
+from hud import Task
+from hud.eval.run import rollout
 from hud.settings import settings
 from hud.utils.platform import canonical_record_id
 
@@ -107,9 +109,10 @@ async def run_cohort(
 ):
     """Keep completed grades if another episode is interrupted, using public HUD APIs.
 
-    HUD appends a Taskset batch's results only after its whole gather completes.
-    Single-row scheduler calls append independently to the same job. One worker
-    per lane advances its own episodes without waiting behind another busy lane.
+    Use HUD's public rollout atom so each completed grade is retained immediately.
+    Taskset.run flushes global telemetry on every call; one Taskset per episode
+    would stall all lanes on repeated global flushes. The campaign flushes once
+    after paid resources close. One worker per lane preserves sequential resets.
     """
     if type(concurrency) is not int or not 1 <= concurrency <= 128:
         raise ValueError("concurrency must be between 1 and 128")
@@ -124,13 +127,15 @@ async def run_cohort(
 
     async def drive_lane(lane_rows):
         for row in lane_rows:
-            await Taskset(job.name, [row]).run(
+            completed = await rollout(
+                row,
                 agent,
                 runtime=runtime,
-                max_concurrent=1,
+                job_id=job.id,
+                group_id=uuid4().hex,
                 rollout_timeout=rollout_timeout,
-                job=job,
             )
+            job.runs.append(completed)
 
     pending = [asyncio.create_task(drive_lane(lane)) for lane in lanes]
     group = asyncio.gather(*pending)
