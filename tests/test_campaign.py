@@ -155,7 +155,7 @@ def test_overlap_uses_real_intervals_and_keeps_incomplete_episodes():
         dict(event="episode_first_model_input", lane_id=0, episode_id="a"),
         dict(event="episode_first_model_input", lane_id=1, episode_id="b"),
         dict(event="episode_driven", lane_id=0, episode_id="a", duration_s=2),
-        dict(event="inference_response", timing={"queue": 10}),
+        dict(event="inference_response", timing={"queue": 10, "replica_wall_ms": 25}),
         dict(event="wave_end", wave=0, monotonic_s=4),
     ]
     report = summarize(events)
@@ -163,6 +163,7 @@ def test_overlap_uses_real_intervals_and_keeps_incomplete_episodes():
     assert report["unterminated_episodes"] == 1
     assert report["timings"]["warm_wave.duration_s"]["mean"] == 3
     assert report["timings"]["server.queue_ms"]["mean"] == 10
+    assert report["timings"]["server.replica_wall_ms"]["mean"] == 25
     assert report["gpu_hours"] is None
 
 
@@ -197,7 +198,11 @@ def test_production_hud_accepts_default_and_www_alias(web):
 
     from hud_dreamscale.campaign_run import verify_production_hud
 
-    verify_production_hud(SimpleNamespace(hud_web_url=web, hud_api_url="https://api.hud.ai"))
+    verify_production_hud(
+        SimpleNamespace(
+            hud_web_url=web, hud_api_url="https://api.hud.ai", hud_runtime_url="https://mcp.hud.ai"
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -215,4 +220,19 @@ def test_production_hud_rejects_nonproduction_backend(web, api):
     from hud_dreamscale.campaign_run import verify_production_hud
 
     with pytest.raises(ValueError, match="production platform"):
-        verify_production_hud(SimpleNamespace(hud_web_url=web, hud_api_url=api))
+        verify_production_hud(
+            SimpleNamespace(hud_web_url=web, hud_api_url=api, hud_runtime_url="https://mcp.hud.ai")
+        )
+
+
+@pytest.mark.parametrize("value", [True, -1, 3, 1.5])
+def test_resubmission_policy_is_bounded(value):
+    with pytest.raises(ValueError, match="resubmissions"):
+        preflight(
+            {
+                "design_sha256": digest(design()),
+                "api_base": "https://api.dreamscalelabs.com",
+                "max_not_admitted_resubmissions": value,
+            },
+            [],
+        )

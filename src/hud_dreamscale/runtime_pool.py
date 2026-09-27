@@ -290,8 +290,12 @@ class RuntimePool:
                     async with lane.lock:
                         pass
 
+            close_gate = asyncio.Semaphore(8)
+
             async def close_owner(owner):
-                async with asyncio.timeout(self.cleanup_timeout):
+                # Avoid a 128-request DELETE burst against HUD. Waiting for the
+                # gate counts against each owner's existing cleanup deadline.
+                async with asyncio.timeout(self.cleanup_timeout), close_gate:
                     await owner.aclose()
 
             drained = await asyncio.gather(

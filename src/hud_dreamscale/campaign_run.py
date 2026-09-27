@@ -30,6 +30,7 @@ def verify_production_hud(settings):
     if (
         str(settings.hud_web_url).rstrip("/") not in {"https://hud.ai", "https://www.hud.ai"}
         or str(settings.hud_api_url).rstrip("/") != "https://api.hud.ai"
+        or str(settings.hud_runtime_url).rstrip("/") != "https://mcp.hud.ai"
     ):
         raise ValueError("HUD must use the production platform")
 
@@ -58,6 +59,9 @@ def preflight(config, ledger):
         raise ValueError("cell does not match the frozen study")
     if config.get("api_base") != PRODUCTION:
         raise ValueError("this campaign requires production Dreamscale")
+    retries = config.get("max_not_admitted_resubmissions", 0)
+    if type(retries) is not int or not 0 <= retries <= 2:
+        raise ValueError("confirmed-not-admitted resubmissions must be 0, 1 or 2")
     allocation = (config["concurrency"], config["h100s"], config["robots_per_replica"])
     if allocation not in SCALING:
         raise ValueError("unplanned concurrency/GPU allocation")
@@ -114,6 +118,8 @@ def preflight(config, ledger):
             "robots_per_replica",
             "hud_environment_revision",
             "simulator_image_digest",
+            "max_not_admitted_resubmissions",
+            "sdk_version",
         ):
             if proof["config"].get(key) != config.get(key):
                 raise ValueError(f"qualification differs from measured cell: {key}")
@@ -149,6 +155,11 @@ async def run(config, output):
     build_before = await asyncio.to_thread(verify_hud_build, config)
     (output / "hud-build-before.json").write_text(json.dumps(build_before, indent=2) + "\n")
     rows = [row.model_copy(update={"env": config["hud_environment_name"]}) for row in rows]
+    # Public HUD setting retains every span locally even if remote uploads lag.
+    private_telemetry = output / "private-telemetry"
+    private_telemetry.mkdir(mode=0o700)
+    previous_local_telemetry = settings.telemetry_local_dir
+    settings.telemetry_local_dir = str(private_telemetry.resolve())
     evidence = Evidence(output / "events.jsonl")
     provider = PooledProvider(
         model=config["model"],
@@ -161,6 +172,7 @@ async def run(config, output):
         expected_release_id=config["release_id"],
         expected_release_sha256=config["release_sha256"],
         request_timeout=15,
+        max_not_admitted_resubmissions=config.get("max_not_admitted_resubmissions", 0),
     )
     runtimes = RuntimePool(
         HUDRuntime(),
@@ -193,6 +205,26 @@ async def run(config, output):
         error = type(exc).__name__
         raise
     finally:
+        from .runtime_cleanup import delete_owned_sessions
+
+        sessions = [
+            row["runtime_session_id"]
+            for row in evidence.rows
+            if row["event"] == "runtime_lease_acquired"
+        ]
+        try:
+            deletion = await delete_owned_sessions(
+                sessions, api_key=settings.api_key, runtime_url=str(settings.hud_runtime_url)
+            )
+        except Exception as exc:
+            deletion = {"duration_s": 0, "delete_acknowledged": False, "error": type(exc).__name__}
+        (output / "runtime-session-deletes.json").write_text(json.dumps(deletion, indent=2) + "\n")
+        evidence.emit(
+            "runtime_session_delete_audit",
+            duration_s=deletion["duration_s"],
+            delete_acknowledged=deletion["delete_acknowledged"],
+            sessions=len(sessions),
+        )
         summary = summarize_cohort(job, rows, evidence.rows)
         summary.update(
             model=config["model"],
@@ -223,7 +255,26 @@ async def run(config, output):
         (output / "metrics.json").write_text(
             json.dumps(summarize_metrics(evidence.rows), indent=2) + "\n"
         )
-        evidence.close()
+        # Drain once, after simulator and inference shutdown. Upload time is not
+        # warm rollout time; incomplete ingestion still blocks the trace audit.
+        from hud.telemetry import flush
+
+        flush_started = time.monotonic()
+        try:
+            drained = await asyncio.to_thread(flush, timeout=120.0)
+            evidence.emit(
+                "telemetry_flush",
+                duration_s=time.monotonic() - flush_started,
+                drained=drained,
+                paid_resources_closed=provider.cleanup_confirmed and runtimes.cleanup_confirmed,
+            )
+            (output / "telemetry-flush.json").write_text(
+                json.dumps({"drained": drained, "duration_s": time.monotonic() - flush_started})
+                + "\n"
+            )
+        finally:
+            settings.telemetry_local_dir = previous_local_telemetry
+            evidence.close()
 
 
 def main():

@@ -40,7 +40,8 @@ def summarize(events):
             ):
                 timings[f"{kind}.{key}"].append(value)
         for key, value in row.get("timing", {}).items():
-            timings[f"server.{key}_ms"].append(value)
+            unit_key = key if key.endswith("_ms") else f"{key}_ms"
+            timings[f"server.{unit_key}"].append(value)
         if kind == "episode_first_model_input":
             identity = (row["lane_id"], row["episode_id"])
             if identity in active:
