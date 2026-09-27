@@ -82,3 +82,9 @@ resolved before qualification. Billing environment IDs differ from runtime sessi
 IDs; traces for pooled leases can report zero environment cost even when the
 provider bills for the lease. The usage audit does not establish GPU hardware or
 request/action identity; those remain separate qualification gates.
+
+For a bounded reference smoke, a qualification cell may set
+`qualification_tasks` to the first N frozen tasks (at least one per lane). This
+option is rejected for scaling and scored measurements. The standard 128-episode
+qualification gate also rejects subset smoke results. The headline remains 128;
+small reference checks do not authorize a fallback or establish policy noninferiority.

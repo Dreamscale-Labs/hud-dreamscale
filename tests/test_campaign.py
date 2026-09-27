@@ -164,3 +164,28 @@ def test_overlap_uses_real_intervals_and_keeps_incomplete_episodes():
     assert report["timings"]["warm_wave.duration_s"]["mean"] == 3
     assert report["timings"]["server.queue_ms"]["mean"] == 10
     assert report["gpu_hours"] is None
+
+
+@pytest.mark.parametrize(
+    "kind,concurrency,count",
+    [
+        ("scored", 128, 128),
+        ("scaling", 1, 1),
+        ("qualification", 8, 1),
+        ("qualification", 1, 0),
+        ("qualification", 1, 129),
+        ("qualification", 1, True),
+    ],
+)
+def test_smoke_subset_cannot_reduce_measurements_or_skip_lanes(kind, concurrency, count):
+    config = dict(
+        design_sha256=digest(design()),
+        api_base="https://api.dreamscalelabs.com",
+        concurrency=concurrency,
+        h100s=8 if concurrency == 128 else 1,
+        robots_per_replica=16 if concurrency == 128 else 8,
+        kind=kind,
+        qualification_tasks=count,
+    )
+    with pytest.raises(ValueError, match="qualification task subset"):
+        preflight(config, [])
