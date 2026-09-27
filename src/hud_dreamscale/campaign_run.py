@@ -57,6 +57,16 @@ def preflight(config, ledger):
         raise ValueError("unknown cell kind")
     if config["kind"] == "scored" and config["concurrency"] != 128:
         raise ValueError("headline fallback requires human approval and a new frozen design")
+    if "qualification_tasks" in config:
+        count = config["qualification_tasks"]
+        if (
+            config["kind"] != "qualification"
+            or type(count) is not int
+            or not config["concurrency"] <= count <= 128
+        ):
+            raise ValueError(
+                "qualification task subset must cover every lane; measurements stay fixed"
+            )
     for field in (
         "release_id",
         "release_sha256",
@@ -127,6 +137,8 @@ async def run(config, output):
     rows = task_rows(
         config["model"], concurrency=config["concurrency"], scored=config["kind"] == "scored"
     )
+    if config["kind"] == "qualification":
+        rows = rows[: config.get("qualification_tasks", 128)]
     build_before = await asyncio.to_thread(verify_hud_build, config)
     (output / "hud-build-before.json").write_text(json.dumps(build_before, indent=2) + "\n")
     rows = [row.model_copy(update={"env": config["hud_environment_name"]}) for row in rows]
