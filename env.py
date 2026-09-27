@@ -10,6 +10,8 @@ from hud_dreamscale.contract import (
     MAX_STEPS,
     POOLED_ENV_NAME,
     POOLED_PROFILE,
+    PI05_PROFILE,
+    PI05_ENV_NAME,
     TASK_SUITES,
 )
 
@@ -17,7 +19,13 @@ from hud_dreamscale.contract import (
 def create_environment(endpoint=None, *, profile=LEGACY_PROFILE, environment=None):
     # HUD deploy discovers names statically, so the declaration must be literal.
     environment = environment or Environment(name="dreamscale-libero")
-    expected_name = POOLED_ENV_NAME if profile == POOLED_PROFILE else ENV_NAME
+    expected_name = (
+        PI05_ENV_NAME
+        if profile == PI05_PROFILE
+        else POOLED_ENV_NAME
+        if profile == POOLED_PROFILE
+        else ENV_NAME
+    )
     assert environment.name == expected_name
     endpoint = (endpoint or RobotEndpoint(LiberoBridge(profile=profile))).attach(environment)
 

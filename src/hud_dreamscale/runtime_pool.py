@@ -46,8 +46,8 @@ class RuntimePool:
         lane_ready_timeout=None,
         lane_ready_attempts=None,
     ):
-        if type(concurrency) is not int or not 1 <= concurrency <= 64:
-            raise ValueError("concurrency must be between 1 and 64")
+        if type(concurrency) is not int or not 1 <= concurrency <= 128:
+            raise ValueError("concurrency must be between 1 and 128")
         if (
             type(startup_timeout) not in (int, float)
             or not math.isfinite(startup_timeout)
