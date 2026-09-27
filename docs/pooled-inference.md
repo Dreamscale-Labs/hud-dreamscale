@@ -31,7 +31,7 @@ orchestration code is deliberately not imported.
 
 ## Client and environment
 
-Install the pinned project with `uv sync --locked`. SDK 0.1.0a27 supports both
+Install the pinned project with `uv sync --locked`. SDK 0.1.0a31 supports both
 Modal gateway discovery and discovery at the exact configured Dreamscale API
 origin. Management uses `https://api.dreamscalelabs.com`; inference uses the
 deployment's returned `api_base`. Do not hardcode a worker tunnel or bypass
@@ -62,3 +62,23 @@ Unit tests cover the real HUD socket/claim/grade loop with a fake simulator and
 mock inference, lane reuse, cancellation, initial staggering, authority renewal,
 request recovery and teardown. Those tests are not real model or policy-quality
 evidence; live qualification is recorded separately in the product repository.
+
+
+### Campaign provider cost and cleanup evidence
+
+Capture HUD environment usage immediately before and after each campaign cell:
+
+```bash
+uv run python -m hud_dreamscale.provider_usage --api-key-id HUD_KEY_UUID --output before.json
+uv run python -m hud_dreamscale.campaign_run --config cell.json --ledger costs.json --output cell-evidence
+uv run python -m hud_dreamscale.provider_usage --api-key-id HUD_KEY_UUID --before before.json --expected-leases 128 --output after.json
+```
+
+Use the key's UUID, never its secret. Keep every snapshot if billing/termination
+arrives late. The audit requires no preexisting active leases, exactly the expected
+new leases, creation within the observation interval, and provider-confirmed
+termination. Shared use of the same key makes attribution ambiguous and must be
+resolved before qualification. Billing environment IDs differ from runtime session
+IDs; traces for pooled leases can report zero environment cost even when the
+provider bills for the lease. The usage audit does not establish GPU hardware or
+request/action identity; those remain separate qualification gates.
