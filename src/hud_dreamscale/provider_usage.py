@@ -50,6 +50,10 @@ def audit(before, after, expected_leases):
     old = {row["id"] for row in before["environments"]}
     created = [row for row in after["environments"] if row["id"] not in old]
     preexisting_active = [row["id"] for row in before["environments"] if not row["terminated_at"]]
+    unrelated = set(before.get("unrelated_active_environment_ids", []))
+    if not unrelated <= set(preexisting_active):
+        raise ValueError("unrelated-session exclusions must name active baseline environments")
+    unattributed_active = sorted(set(preexisting_active) - unrelated)
     in_interval = all(
         before["started_at"]
         <= datetime.fromisoformat(row["created_at"]).timestamp()
@@ -59,7 +63,7 @@ def audit(before, after, expected_leases):
     complete = (
         expected_leases > 0
         and len(created) == expected_leases
-        and not preexisting_active
+        and not unattributed_active
         and in_interval
         and all(row["status"] == "terminated" and row["terminated_at"] for row in created)
     )
@@ -68,6 +72,8 @@ def audit(before, after, expected_leases):
         "expected_leases": expected_leases,
         "observed_leases": len(created),
         "preexisting_active": preexisting_active,
+        "unrelated_active_environment_ids": sorted(unrelated),
+        "unattributed_active_environment_ids": unattributed_active,
         "provider_cost_usd": sum(float(row["cost"]) for row in created) if complete else None,
         "environment_ids": [row["id"] for row in created],
         "attribution": "Key-scoped before/after difference; billing IDs differ from runtime IDs",
@@ -84,10 +90,25 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--before", type=Path)
     parser.add_argument("--expected-leases", type=int)
+    parser.add_argument(
+        "--exclude-existing-active",
+        action="append",
+        default=[],
+        help="UUID of a user-confirmed unrelated active environment, declared before launch",
+    )
     args = parser.parse_args()
     if args.before and (args.expected_leases is None or args.expected_leases <= 0):
         parser.error("--before requires a positive --expected-leases")
+    if args.before and args.exclude_existing_active:
+        parser.error("unrelated sessions must be declared in the before snapshot")
     result = snapshot(args.api_key_id)
+    if args.exclude_existing_active:
+        active = {row["id"] for row in result["environments"] if not row["terminated_at"]}
+        for identity in args.exclude_existing_active:
+            UUID(identity)
+        if not set(args.exclude_existing_active) <= active:
+            parser.error("excluded session must already be active in this baseline")
+        result["unrelated_active_environment_ids"] = args.exclude_existing_active
     if args.before:
         result["audit"] = audit(json.loads(args.before.read_text()), result, args.expected_leases)
     with args.output.open("x") as stream:

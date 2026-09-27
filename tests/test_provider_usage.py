@@ -60,3 +60,13 @@ def test_wrong_key_is_not_attributed():
 
     with pytest.raises(ValueError, match="attribution"):
         snapshot(KEY, Client())
+
+
+def test_unrelated_manual_environment_must_be_declared_in_baseline():
+    before, after = samples([lease()])
+    before["environments"] = [dict(lease("manual"), terminated_at=None)]
+    before["unrelated_active_environment_ids"] = ["manual"]
+    assert audit(before, after, 1)["cleanup_confirmed"]
+    before["unrelated_active_environment_ids"] = ["one"]
+    with pytest.raises(ValueError, match="active baseline"):
+        audit(before, after, 1)
