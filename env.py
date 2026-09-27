@@ -1,5 +1,7 @@
 """HUD-deployable LIBERO environment; model inference is supplied by the agent."""
 
+import os
+
 from hud import Environment
 from hud.environment.robot import RobotEndpoint
 
@@ -8,10 +10,10 @@ from hud_dreamscale.contract import (
     ENV_NAME,
     LEGACY_PROFILE,
     MAX_STEPS,
+    PI05_ENV_NAME,
+    PI05_PROFILE,
     POOLED_ENV_NAME,
     POOLED_PROFILE,
-    PI05_PROFILE,
-    PI05_ENV_NAME,
     TASK_SUITES,
 )
 
@@ -60,4 +62,18 @@ def create_environment(endpoint=None, *, profile=LEGACY_PROFILE, environment=Non
     return environment
 
 
-env = create_environment()
+# HUD's build introspection loads env.py even when Docker CMD names another
+# entrypoint. Bind this module to the same immutable image profile as serving.
+_profile = os.environ.get("HUD_OBSERVATION_PROFILE", LEGACY_PROFILE)
+if _profile == PI05_PROFILE:
+    env = create_environment(
+        profile=_profile, environment=Environment(name="dreamscale-libero-pooled-pi05")
+    )
+elif _profile == POOLED_PROFILE:
+    env = create_environment(
+        profile=_profile, environment=Environment(name="dreamscale-libero-pooled")
+    )
+elif _profile == LEGACY_PROFILE:
+    env = create_environment()
+else:
+    raise ValueError("Unknown HUD_OBSERVATION_PROFILE")
