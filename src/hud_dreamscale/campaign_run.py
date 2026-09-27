@@ -26,6 +26,14 @@ from .telemetry import Evidence
 PRODUCTION = "https://api.dreamscalelabs.com"
 
 
+def verify_production_hud(settings):
+    if (
+        str(settings.hud_web_url).rstrip("/") not in {"https://hud.ai", "https://www.hud.ai"}
+        or str(settings.hud_api_url).rstrip("/") != "https://api.hud.ai"
+    ):
+        raise ValueError("HUD must use the production platform")
+
+
 def verify_hud_build(config):
     from hud.utils.platform import PlatformClient
 
@@ -129,8 +137,7 @@ async def run(config, output):
         raise ValueError("live campaign requires the published SDK, not a local source override")
     if version("dreamscale") != config["sdk_version"]:
         raise ValueError("installed SDK differs from the pinned campaign release")
-    if str(settings.hud_web_url).rstrip("/") != "https://www.hud.ai":
-        raise ValueError("HUD must use the production platform")
+    verify_production_hud(settings)
     account = load_config()
     if not account.api_key or account.control_plane_url.rstrip("/") != PRODUCTION:
         raise ValueError("sign in with the production Dreamscale account")

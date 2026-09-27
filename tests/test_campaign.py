@@ -189,3 +189,30 @@ def test_smoke_subset_cannot_reduce_measurements_or_skip_lanes(kind, concurrency
     )
     with pytest.raises(ValueError, match="qualification task subset"):
         preflight(config, [])
+
+
+@pytest.mark.parametrize("web", ["https://hud.ai", "https://www.hud.ai/"])
+def test_production_hud_accepts_default_and_www_alias(web):
+    from types import SimpleNamespace
+
+    from hud_dreamscale.campaign_run import verify_production_hud
+
+    verify_production_hud(SimpleNamespace(hud_web_url=web, hud_api_url="https://api.hud.ai"))
+
+
+@pytest.mark.parametrize(
+    "web,api",
+    [
+        ("http://hud.ai", "https://api.hud.ai"),
+        ("https://dev.hud.ai", "https://api.hud.ai"),
+        ("https://hud.ai", "http://api.hud.ai"),
+        ("https://hud.ai", "https://api-dev.hud.ai"),
+    ],
+)
+def test_production_hud_rejects_nonproduction_backend(web, api):
+    from types import SimpleNamespace
+
+    from hud_dreamscale.campaign_run import verify_production_hud
+
+    with pytest.raises(ValueError, match="production platform"):
+        verify_production_hud(SimpleNamespace(hud_web_url=web, hud_api_url=api))
