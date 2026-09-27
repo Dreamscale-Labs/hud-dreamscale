@@ -15,6 +15,7 @@ from hud_dreamscale.contract import (
     LEGACY_PROFILE,
     MAX_STEPS,
     POOLED_PROFILE,
+    PI05_PROFILE,
     POOLED_RESOLUTION,
     TASK_SUITES,
     build_contract,
@@ -121,7 +122,7 @@ class LiberoBridge(RobotBridge):
         if self._obs is None:
             return None
         data = {key: np.asarray(self._obs[key])[None] for key in CAMERAS}
-        if self.profile == POOLED_PROFILE:
+        if self.profile in (POOLED_PROFILE, PI05_PROFILE):
             data.update(
                 {key: value[None] for key, value in pooled_state_from_raw(self._obs).items()}
             )

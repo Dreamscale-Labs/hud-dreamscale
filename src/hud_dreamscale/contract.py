@@ -14,6 +14,28 @@ LEGACY_PROFILE = "libero-legacy-v1"
 POOLED_PROFILE = "libero-raw360-v1"
 POOLED_ENV_NAME = "dreamscale-libero-pooled"
 POOLED_RESOLUTION = 360
+PI05_PROFILE = "libero-raw256-v1"
+PI05_ENV_NAME = "dreamscale-libero-pooled-pi05"
+POOLED_MODELS = {
+    "molmoact2-libero": {
+        "profile": POOLED_PROFILE,
+        "resolution": 360,
+        "action_steps": 10,
+        "env": POOLED_ENV_NAME,
+        "precision": "bf16_swiglu_fp32",
+        "prefill_batch": 2,
+        "action_batch": 4,
+    },
+    "pi0.5-libero": {
+        "profile": PI05_PROFILE,
+        "resolution": 256,
+        "action_steps": 5,
+        "env": PI05_ENV_NAME,
+        "precision": "openpi_reference_bf16",
+        "prefill_batch": 1,
+        "action_batch": 1,
+    },
+}
 # LIBERO reference controller cadence. This is simulation time per action,
 # independent of network latency and the published SDK sim profile's default.
 CONTROL_HZ = 20
@@ -46,9 +68,9 @@ GOAL_TASK_NAMES = TASK_SUITES["libero_goal"]
 def build_contract(control_hz=CONTROL_HZ, *, profile=LEGACY_PROFILE):
     if control_hz not in (10, 20):
         raise ValueError("Supported LIBERO control rates are 10 and 20 Hz")
-    if profile not in (LEGACY_PROFILE, POOLED_PROFILE):
+    if profile not in (LEGACY_PROFILE, POOLED_PROFILE, PI05_PROFILE):
         raise ValueError("Unsupported LIBERO observation profile")
-    if profile == POOLED_PROFILE and control_hz != CONTROL_HZ:
+    if profile in (POOLED_PROFILE, PI05_PROFILE) and control_hz != CONTROL_HZ:
         raise ValueError("The pooled LIBERO profile requires 20 Hz control")
     resolution = POOLED_RESOLUTION if profile == POOLED_PROFILE else 256
     contract = {
@@ -86,8 +108,8 @@ def build_contract(control_hz=CONTROL_HZ, *, profile=LEGACY_PROFILE):
             },
         },
     }
-    if profile == POOLED_PROFILE:
-        contract["observation_profile"] = POOLED_PROFILE
+    if profile in (POOLED_PROFILE, PI05_PROFILE):
+        contract["observation_profile"] = profile
         del contract["features"]["state"]
         for key, shape, metadata in (
             ("robot0_eef_pos", [3], {"position_unit": "meters"}),

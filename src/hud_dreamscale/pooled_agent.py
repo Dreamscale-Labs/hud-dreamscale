@@ -14,11 +14,9 @@ from hud.telemetry.context import get_current_trace_id
 
 from .contract import (
     CAMERAS,
-    CHUNK_SIZE,
     CONTROL_HZ,
     MAX_STEPS,
-    POOLED_PROFILE,
-    POOLED_RESOLUTION,
+    POOLED_MODELS,
     build_contract,
     finite_array,
 )
@@ -36,11 +34,13 @@ class PooledInput:
 class PooledLiberoAdapter(Adapter):
     """Preserve raw RGB and quaternion geometry for server-owned preprocessing."""
 
-    def __init__(self):
-        super().__init__(chunk_size=CHUNK_SIZE)
+    def __init__(self, model="molmoact2-libero"):
+        self.contract = POOLED_MODELS[model]
+        self.steps = self.contract["action_steps"]
+        super().__init__(chunk_size=self.steps)
 
     def bind(self, action_space, observation_space):
-        expected = build_contract(profile=POOLED_PROFILE)["features"]
+        expected = build_contract(profile=self.contract["profile"])["features"]
         for name, contract in expected.items():
             actual = action_space if name == "action" else observation_space.get(name)
             if actual is None or any(
@@ -56,8 +56,13 @@ class PooledLiberoAdapter(Adapter):
         raw = {}
         for key in CAMERAS:
             frame = np.asarray(data[key])
-            if frame.dtype != np.uint8 or frame.shape != (POOLED_RESOLUTION, POOLED_RESOLUTION, 3):
-                raise ValueError(f"{key} must be raw 360x360 RGB uint8")
+            if frame.dtype != np.uint8 or frame.shape != (
+                self.contract["resolution"],
+                self.contract["resolution"],
+                3,
+            ):
+                side = self.contract["resolution"]
+                raise ValueError(f"{key} must be raw {side}x{side} RGB uint8")
             raw[key] = frame
         for key, shape in (
             ("robot0_eef_pos", (3,)),
@@ -75,7 +80,7 @@ class PooledLiberoAdapter(Adapter):
         return PooledInput(raw, prompt, digest.hexdigest())
 
     def adapt_chunk(self, chunk, obs):
-        return finite_array(chunk, (CHUNK_SIZE, 7), "model action chunk")
+        return finite_array(chunk, (self.steps, 7), "model action chunk")
 
     def adapt_action(self, action, obs):
         return finite_array(action, (7,), "LIBERO action")
@@ -110,7 +115,9 @@ class PooledModel(Model):
                 noise_seed=self.seed + self.calls,
                 trace_id=self.trace_id,
             )
-            actions = finite_array(actions, (CHUNK_SIZE, 7), "model action chunk")
+            actions = finite_array(
+                actions, (getattr(self.provider, "action_steps", 10), 7), "model action chunk"
+            )
             self.emit(
                 "inference",
                 **self.fields,
@@ -139,7 +146,7 @@ class _EpisodeAgent(RobotAgent):
 
     def __init__(self, model, *, max_steps, emit, fields):
         self.model = model
-        self.adapter = PooledLiberoAdapter()
+        self.adapter = PooledLiberoAdapter(getattr(model.provider, "model", "molmoact2-libero"))
         self.action_limit = max_steps
         self.emit, self.fields = emit, fields
 
@@ -160,8 +167,8 @@ class PooledRobotAgent(Agent):
 
     def __init__(self, *, provider, runtimes, max_steps=MAX_STEPS, emit=None):
         for name, width in (("Provider", provider.concurrency), ("Runtime", runtimes.concurrency)):
-            if type(width) is not int or not 1 <= width <= 64:
-                raise ValueError(f"{name} concurrency must be an integer from 1 to 64")
+            if type(width) is not int or not 1 <= width <= 128:
+                raise ValueError(f"{name} concurrency must be an integer from 1 to 128")
         if runtimes.concurrency > provider.concurrency:
             raise ValueError("Runtime concurrency must not exceed the provider's slot count")
         if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
@@ -177,7 +184,7 @@ class PooledRobotAgent(Agent):
         # Consume before yielding: retries, cancellation and episode resets must
         # not introduce a recurring delay. Slot groups match the server's slot // 8.
         self._staggered.add(key)
-        delay = (slot % 8) * _INITIAL_STAGGER_STEP_S
+        delay = (slot % getattr(self.provider, "robots_per_replica", 8)) * _INITIAL_STAGGER_STEP_S
         started, outcome = time.monotonic(), "error"
         try:
             if delay:
@@ -212,9 +219,12 @@ class PooledRobotAgent(Agent):
             contract = run.client.binding(RobotAgent.robot_protocol).params.get("contract") or {}
             if (
                 contract.get("control_rate") != CONTROL_HZ
-                or contract.get("observation_profile") != POOLED_PROFILE
+                or contract.get("observation_profile")
+                != POOLED_MODELS[getattr(self.provider, "model", "molmoact2-libero")]["profile"]
             ):
-                raise ValueError("Pooled inference requires the raw360 LIBERO profile at 20 Hz")
+                raise ValueError(
+                    "Pooled inference requires its model's raw LIBERO profile at 20 Hz"
+                )
             if not self.provider.is_slot_available(lane.slot):
                 raise RuntimeError("Inference slot is fenced after an unresolved request")
             self.emit("environment_ready", **fields)
@@ -223,7 +233,9 @@ class PooledRobotAgent(Agent):
                 **fields,
                 "active_concurrency": self.runtimes.concurrency,
                 "provider_concurrency": self.provider.concurrency,
-                "observation_profile": POOLED_PROFILE,
+                "observation_profile": POOLED_MODELS[
+                    getattr(self.provider, "model", "molmoact2-libero")
+                ]["profile"],
                 "control_hz": CONTROL_HZ,
             }
             model = PooledModel(

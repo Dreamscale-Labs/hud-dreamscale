@@ -18,6 +18,8 @@ import numpy as np
 from dreamscale.errors import DreamscaleError
 from dreamscale.inference import AsyncInferenceClient, action_request
 
+from .contract import POOLED_MODELS
+
 IDENTITY_KEYS = ("deployment_id", "robot_slot", "request_id", "sequence", "episode_id")
 TERMINAL_FAILURES = {"request_not_admitted", "expired", "preprocessing_failed"}
 CREATION_REJECTIONS = {
@@ -242,6 +244,8 @@ class PooledProvider:
         self,
         *,
         concurrency=8,
+        robots_per_replica=8,
+        model=MODEL,
         api_key=None,
         api_base=None,
         emit=None,
@@ -259,8 +263,8 @@ class PooledProvider:
         expected_release_sha256=None,
         client_factory=AsyncInferenceClient,
     ):
-        if type(concurrency) is not int or not 1 <= concurrency <= 64:
-            raise ValueError("concurrency must be an integer from 1 to 64")
+        if type(concurrency) is not int or not 1 <= concurrency <= 128:
+            raise ValueError("concurrency must be an integer from 1 to 128")
         for name, value in {
             "ready_timeout": ready_timeout,
             "recovery_timeout": recovery_timeout,
@@ -277,8 +281,18 @@ class PooledProvider:
             or not 0 <= max_not_admitted_resubmissions <= 2
         ):
             raise ValueError("max_not_admitted_resubmissions must be an integer from 0 to 2")
+        if model not in POOLED_MODELS:
+            raise ValueError("Unsupported pooled model")
+        self.model = model
+        self.model_contract = POOLED_MODELS[model]
+        self.action_steps = self.model_contract["action_steps"]
         self.concurrency = concurrency
-        self.capacity = 8 * math.ceil(concurrency / 8)
+        if type(robots_per_replica) is not int or robots_per_replica not in (8, 16):
+            raise ValueError("robots_per_replica must be 8 or 16")
+        self.robots_per_replica = robots_per_replica
+        self.capacity = robots_per_replica * math.ceil(concurrency / robots_per_replica)
+        if self.capacity // robots_per_replica > 8:
+            raise ValueError("concurrency must use at most eight H100s; select density explicitly")
         self.emit = emit or (lambda event, **fields: None)
         self.api_key, self.api_base = api_key, api_base
         self.ready_timeout, self.recovery_timeout = ready_timeout, recovery_timeout
@@ -505,6 +519,12 @@ class PooledProvider:
                     idempotency_key=self._key,
                     warm_robots=self.capacity,
                     max_robots=self.capacity,
+                    **({"model": self.model} if self.model != MODEL else {}),
+                    **(
+                        {"robots_per_replica": self.robots_per_replica}
+                        if self.robots_per_replica != 8
+                        else {}
+                    ),
                 )
                 if not isinstance(value, dict) or not isinstance(value.get("id"), str):
                     raise ValueError("Deployment creation returned no identity")
@@ -523,10 +543,8 @@ class PooledProvider:
     def _validate_deployment(self, value):
         expected = {
             "id": self.deployment_id,
-            "model": MODEL,
-            "precision": "bf16_swiglu_fp32",
-            "prefill_batch": 2,
-            "action_batch": 4,
+            "model": self.model,
+            **{k: self.model_contract[k] for k in ("precision", "prefill_batch", "action_batch")},
             "max_robots": self.capacity,
             "warm_robots": self.capacity,
         }
@@ -534,6 +552,13 @@ class PooledProvider:
             raise ValueError("Deployment identity, capacity or qualified backend changed")
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,96}", str(value.get("release_id", ""))):
             raise ValueError("Deployment has no valid release ID")
+        if value.get("robots_per_replica", 8) != self.robots_per_replica:
+            raise ValueError("Deployment GPU density differs from the requested allocation")
+        if (
+            value.get("max_replicas", self.capacity // 8)
+            != self.capacity // self.robots_per_replica
+        ):
+            raise ValueError("Deployment GPU count differs from the requested allocation")
         if not re.fullmatch(r"[0-9a-f]{64}", str(value.get("release_sha256", ""))):
             raise ValueError("Deployment has no immutable release digest")
         for key, selected in (
@@ -709,13 +734,13 @@ class PooledProvider:
                 raise ValueError("Invalid terminal inference failure")
             return "failed"
         if (
-            result.get("model") != MODEL
+            result.get("model") != self.model
             or result.get("release_id") != self.deployment["release_id"]
         ):
             raise ValueError("Inference model/release differs from the owned deployment")
         actions = np.asarray(result.get("actions"))
         if (
-            actions.shape != (10, 7)
+            actions.shape != (self.action_steps, 7)
             or actions.dtype.kind not in "fi"
             or not np.isfinite(actions).all()
         ):
@@ -808,7 +833,11 @@ class PooledProvider:
         try:
             for key in ("agentview_image", "robot0_eye_in_hand_image"):
                 frame = np.asarray(observation[key])
-                if frame.shape != (360, 360, 3) or frame.dtype != np.uint8:
+                if (
+                    frame.shape
+                    != (self.model_contract["resolution"], self.model_contract["resolution"], 3)
+                    or frame.dtype != np.uint8
+                ):
                     raise ValueError("Pooled LIBERO requires native raw360 RGB uint8 cameras")
             # Own the arrays while PNG encoding runs outside the asyncio event loop.
             raw = {key: np.array(value, copy=True) for key, value in observation.items()}

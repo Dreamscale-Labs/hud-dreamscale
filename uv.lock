@@ -400,7 +400,7 @@ wheels = [
 
 [[package]]
 name = "dreamscale"
-version = "0.1.0a27"
+version = "0.1.0a31"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -413,14 +413,14 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/02/fd/88e6aca773102431f32319e953fd54010761374c6728669cd97c8afbd1ea/dreamscale-0.1.0a27.tar.gz", hash = "sha256:70b5243f60f403fe06a627392829ef15258d803ff6f51ed63986dcedbcd5ac53", size = 240342, upload-time = "2026-09-24T10:02:31.319Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ab/f9/444dfebe07a59bfcd1b5faf1b8530be648636fd2fe280f451e1c12f890ea/dreamscale-0.1.0a31.tar.gz", hash = "sha256:4bacd714b722e8a9bbfb4698407f7189dc3bd654c36c07bdef2f1a18012766a9", size = 245429, upload-time = "2026-09-27T22:58:01.152Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/e7/917efae4e98d3d8d3860a18402b25b559b3fbf09b462cdcfa413b8370c5d/dreamscale-0.1.0a27-py3-none-any.whl", hash = "sha256:b2ee80b7ece350aee4bdf121fba5826991c308d5a82fda2efebc9103978db92f", size = 268951, upload-time = "2026-09-24T10:02:29.942Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/9f/542b12defd85ee08db7a8d8c620b47b7645f2c2e58622392d8ef5e4a0666/dreamscale-0.1.0a31-py3-none-any.whl", hash = "sha256:a288b946badf985655ca0cb234177db6df398400c09e8fe3e6cdc32d90c70cb8", size = 274997, upload-time = "2026-09-27T22:57:59.626Z" },
 ]
 
 [[package]]
 name = "dropbear-transport"
-version = "0.1.1a10"
+version = "0.1.1a13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aioquic" },
@@ -430,9 +430,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/09/e4/e3fc306fba06e6d3710a75ff3d9bb9f9051e302b42e333ae5c984b67b7d6/dropbear_transport-0.1.1a10.tar.gz", hash = "sha256:47370833e4334cbe98379dfc4c4d17c8321f3f80df95a827f50ddeb59c068f02", size = 40225, upload-time = "2026-09-23T05:00:40.359Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d4/4b/6c866cabedb59804b2921c85e54fbc7c6f7dad64545287ddb39260233c2d/dropbear_transport-0.1.1a13.tar.gz", hash = "sha256:01c89ba36ad457d28a832e9231d8978268918da65f881ca5d87108f1c8909e08", size = 43318, upload-time = "2026-09-27T20:58:42.589Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/cf/d91fd52184b331b12daadcd00e64b2034c6fd51c220b8bb749ddacf2ae13/dropbear_transport-0.1.1a10-py3-none-any.whl", hash = "sha256:2b9662360385222c9daae09eb3312c2f995b3a262498a5636f5ea68cae4a693a", size = 47415, upload-time = "2026-09-23T05:00:39.194Z" },
+    { url = "https://files.pythonhosted.org/packages/01/85/f982572c34a2f5668c293c9702978debb2d88f260ea851b0447a828cbc39/dropbear_transport-0.1.1a13-py3-none-any.whl", hash = "sha256:3dd98027d9f3b8c57fda2df3b412618afb3c596230fd775994b2aab8ab176d61", size = 51501, upload-time = "2026-09-27T20:58:41.584Z" },
 ]
 
 [[package]]
@@ -693,7 +693,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "dreamscale", specifier = "==0.1.0a27" },
+    { name = "dreamscale", specifier = "==0.1.0a31" },
     { name = "hud", extras = ["robot"], git = "https://github.com/hud-evals/hud-python?rev=0b63b4d3b9acb6d095e0886e18b2c905219e1e5a" },
     { name = "numpy", specifier = "==2.2.6" },
 ]

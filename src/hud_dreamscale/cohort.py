@@ -15,8 +15,8 @@ COHORT_VERSION = "libero-pooled-v1"
 
 def cohort_tasks(concurrency, *, episodes_per_lane=2, max_steps=MAX_STEPS):
     """Predeclare every attempt: six fixed selections cycled across lane waves."""
-    if type(concurrency) is not int or not 1 <= concurrency <= 64:
-        raise ValueError("concurrency must be between 1 and 64")
+    if type(concurrency) is not int or not 1 <= concurrency <= 128:
+        raise ValueError("concurrency must be between 1 and 128")
     if type(episodes_per_lane) is not int or episodes_per_lane < 2:
         raise ValueError("At least two episodes per lane are required to measure reuse")
     if type(max_steps) is not int or not 1 <= max_steps <= MAX_STEPS:
@@ -111,8 +111,8 @@ async def run_cohort(
     Single-row scheduler calls append independently to the same job. One worker
     per lane advances its own episodes without waiting behind another busy lane.
     """
-    if type(concurrency) is not int or not 1 <= concurrency <= 64:
-        raise ValueError("concurrency must be between 1 and 64")
+    if type(concurrency) is not int or not 1 <= concurrency <= 128:
+        raise ValueError("concurrency must be between 1 and 128")
     if cleanup_timeout <= 0:
         raise ValueError("cleanup_timeout must be positive")
     lanes = [[] for _ in range(concurrency)]
