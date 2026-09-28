@@ -45,6 +45,7 @@ class RuntimePool:
         connector=None,
         lane_ready_timeout=None,
         lane_ready_attempts=None,
+        lease_acquisition_timeout=None,
     ):
         if type(concurrency) is not int or not 1 <= concurrency <= 128:
             raise ValueError("concurrency must be between 1 and 128")
@@ -67,6 +68,15 @@ class RuntimePool:
         if type(lane_ready_attempts) is not int or lane_ready_attempts < 1:
             raise ValueError("lane_ready_attempts must be a positive integer")
         self.provider = provider
+        if lease_acquisition_timeout is not None and (
+            type(lease_acquisition_timeout) not in (int, float)
+            or not math.isfinite(lease_acquisition_timeout)
+            or not 0 < lease_acquisition_timeout <= startup_timeout
+        ):
+            raise ValueError(
+                "lease_acquisition_timeout must be positive and within startup_timeout"
+            )
+        self.lease_acquisition_timeout = lease_acquisition_timeout
         self.concurrency = concurrency
         self.emit = emit or (lambda event, **fields: None)
         self.startup_timeout = startup_timeout
@@ -124,23 +134,46 @@ class RuntimePool:
                 await owner.__aenter__()
                 self._owners[slot] = owner
                 try:
-                    runtime = await owner.enter_async_context(
-                        self.provider(self._representatives[slot])
-                    )
+
+                    async def acquire(
+                        owner=owner, attempt=attempt, attempt_started=attempt_started
+                    ):
+                        async with asyncio.timeout(self.lease_acquisition_timeout):
+                            value = await owner.enter_async_context(
+                                self.provider(self._representatives[slot])
+                            )
+                        self.emit(
+                            "runtime_lease_acquired",
+                            lane_id=slot,
+                            attempt=attempt,
+                            duration_s=time.monotonic() - attempt_started,
+                            runtime_session_id=value.params.get("session_id"),
+                            ready_timeout_s=self.lane_ready_timeout,
+                        )
+                        return value
+
+                    if self.lease_acquisition_timeout is None:
+                        runtime = await acquire()
+                    else:
+                        # HUD may create a remote session before its POST returns.
+                        # Finish that bounded exchange and record ownership before
+                        # honoring cancellation, so cleanup can delete the lease.
+                        allocation = asyncio.create_task(acquire())
+                        cancelled = False
+                        while not allocation.done():
+                            try:
+                                await asyncio.shield(allocation)
+                            except asyncio.CancelledError:
+                                cancelled = True
+                        runtime = allocation.result()
+                        if cancelled:
+                            raise asyncio.CancelledError
                     # HUD connect prioritizes Runtime.params over its timeout keyword.
                     # Copy the public descriptor so the pool's bound takes effect without
                     # changing the provider's descriptor or its ownership/cleanup context.
                     runtime = replace(
                         runtime,
                         params={**runtime.params, "ready_timeout": self.lane_ready_timeout},
-                    )
-                    self.emit(
-                        "runtime_lease_acquired",
-                        lane_id=slot,
-                        attempt=attempt,
-                        duration_s=time.monotonic() - attempt_started,
-                        runtime_session_id=runtime.params.get("session_id"),
-                        ready_timeout_s=self.lane_ready_timeout,
                     )
                     # A lease can precede remote readiness. Hello initializes control
                     # without starting a task or claiming a robot slot.

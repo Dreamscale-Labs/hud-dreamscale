@@ -198,6 +198,7 @@ async def run(config, output):
         concurrency=config["concurrency"],
         emit=evidence.emit,
         lane_ready_attempts=1,
+        lease_acquisition_timeout=45,
     )
     job = None
     error = None

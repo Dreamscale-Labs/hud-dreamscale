@@ -109,3 +109,82 @@ async def test_external_cancellation_waits_for_both_partial_startups_to_clean_up
     with pytest.raises(asyncio.CancelledError):
         await task
     assert sorted(closed) == [0, 1]
+
+
+async def test_compute_failure_during_hud_post_receives_and_closes_remote_lease(monkeypatch):
+    from hud import HUDRuntime
+
+    from hud_dreamscale.cohort import cohort_tasks
+    from hud_dreamscale.runtime_pool import RuntimePool
+
+    allocated, response_ready = asyncio.Event(), asyncio.Event()
+    deleted, evidence = [], []
+
+    async def create(*args):
+        allocated.set()
+        await response_ready.wait()
+        return "owned-session"
+
+    async def delete(*args):
+        deleted.append(args[-1])
+
+    monkeypatch.setattr(HUDRuntime, "_create_runtime_session", create)
+    monkeypatch.setattr(HUDRuntime, "_delete_runtime_session", delete)
+    monkeypatch.setattr("hud.settings.settings.api_key", "test-key")
+
+    @asynccontextmanager
+    async def failed_compute():
+        await allocated.wait()
+        raise ValueError("admission denied")
+        yield
+
+    pool = RuntimePool(
+        HUDRuntime(),
+        cohort_tasks(1),
+        concurrency=1,
+        lease_acquisition_timeout=1,
+        emit=lambda event, **fields: evidence.append({"event": event, **fields}),
+    )
+
+    async def exercise():
+        async with parallel_startup(failed_compute(), pool, emit=lambda *a, **kw: None):
+            pytest.fail("must not start rollout")
+
+    task = asyncio.create_task(exercise())
+    await allocated.wait()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not task.done()
+    response_ready.set()
+    with pytest.raises(ExceptionGroup):
+        await asyncio.wait_for(task, 1)
+    assert deleted == ["owned-session"]
+    leases = [e for e in evidence if e["event"] == "runtime_lease_acquired"]
+    assert [e["runtime_session_id"] for e in leases] == ["owned-session"]
+    assert pool.cleanup_confirmed
+
+
+async def test_protected_lease_acquisition_still_has_a_deadline():
+    from hud_dreamscale.cohort import cohort_tasks
+    from hud_dreamscale.runtime_pool import RuntimePool
+
+    cleaned = []
+
+    @asynccontextmanager
+    async def stalled_provider(task):
+        try:
+            await asyncio.Event().wait()
+            yield
+        finally:
+            cleaned.append(True)
+
+    pool = RuntimePool(
+        stalled_provider,
+        cohort_tasks(1),
+        concurrency=1,
+        lease_acquisition_timeout=0.01,
+        lane_ready_attempts=1,
+    )
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(pool.__aenter__(), 1)
+    assert cleaned == [True]
