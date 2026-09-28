@@ -32,7 +32,7 @@ class PooledInput:
 
 
 class PooledLiberoAdapter(Adapter):
-    """Preserve raw RGB and quaternion geometry for server-owned preprocessing."""
+    """Restore raw RGB and keep quaternion geometry for server-owned preprocessing."""
 
     def __init__(self, model="molmoact2-libero"):
         self.contract = POOLED_MODELS[model]
@@ -62,8 +62,9 @@ class PooledLiberoAdapter(Adapter):
                 3,
             ):
                 side = self.contract["resolution"]
-                raise ValueError(f"{key} must be raw {side}x{side} RGB uint8")
-            raw[key] = frame
+                raise ValueError(f"{key} must be {side}x{side} RGB uint8")
+            # Pooled raw profiles take the raw render buffer, so undo the env's upright turn.
+            raw[key] = np.ascontiguousarray(frame[::-1, ::-1])
         for key, shape in (
             ("robot0_eef_pos", (3,)),
             ("robot0_eef_quat_xyzw", (4,)),

@@ -173,8 +173,9 @@ at table center, placing it on the plate.
 The environment uses 20 Hz actual control, ten settling steps, ten-action
 chunks and a 600-action limit. State is EEF XYZ, axis-angle radians and two
 gripper positions. Actions use LIBERO's native seven-value delta-EEF control.
-Raw 256×256 RGB agent/wrist cameras are passed to Dreamscale, which performs its
-rotation, resize and encoding once. HUD traces preserve the raw camera orientation.
+The environment publishes upright 256×256 RGB agent/wrist cameras, so HUD traces
+show the scene upright. The adapter restores the raw render buffer that Dreamscale's
+LIBERO API expects; Dreamscale then performs its rotation, resize and encoding once.
 RTC and calibration are off because HUD drives a synchronous chunk loop.
 
 The initial integration used the SDK simulation profile's 10 Hz setting. It now

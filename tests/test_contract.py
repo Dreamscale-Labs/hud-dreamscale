@@ -16,10 +16,11 @@ from hud_dreamscale.contract import (
 
 
 def observation():
+    # Upright env frames: color in the bottom-right is the raw buffer's top-left.
     agent = np.zeros((256, 256, 3), dtype=np.uint8)
-    agent[:128, :128] = [255, 0, 0]
+    agent[128:, 128:] = [255, 0, 0]
     wrist = np.zeros_like(agent)
-    wrist[:128, :128] = [0, 255, 0]
+    wrist[128:, 128:] = [0, 255, 0]
     return {
         "data": {CAMERAS[0]: agent, CAMERAS[1]: wrist, "state": np.arange(8, dtype=np.float32)},
         "terminated": False,
@@ -39,7 +40,7 @@ def test_wire_and_preprocessing_once():
     assert wire.frame.libero_state == list(range(8))
     images = [np.array(Image.open(io.BytesIO(x))) for x in wire.camera_payloads.values()]
     assert images[0].shape == (224, 224, 3)
-    # Exactly one 180-degree rotation: raw top-left colors arrive in bottom-right.
+    # Upright in, upright out: the adapter's undo and the SDK's rotation cancel.
     assert images[0][180, 180, 0] > 240 and images[0][40, 40, 0] < 10
     assert images[1][180, 180, 1] > 240 and images[1][40, 40, 1] < 10
 
@@ -56,7 +57,7 @@ def test_input_digest_detects_camera_state_and_instruction_changes():
 
 
 @pytest.mark.parametrize(
-    "field,value", [("orientation", "upright"), ("camera_role", "wrist"), ("dtype", "float32")]
+    "field,value", [("orientation", "libero_raw"), ("camera_role", "wrist"), ("dtype", "float32")]
 )
 def test_contract_rejects_silent_camera_changes(field, value):
     f = build_contract()["features"]

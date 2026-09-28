@@ -24,7 +24,8 @@ class RawBridge(FakeBridge):
 
     def get_observation(self):
         data = {key: np.full((1, 360, 360, 3), self.slot, dtype=np.uint8) for key in CAMERAS}
-        data[CAMERAS[0]][:, 0, 0] = [10, 20, 30]  # Asymmetric orientation/color sentinel.
+        # Upright bottom-right sentinel; the provider must receive it at the raw top-left.
+        data[CAMERAS[0]][:, -1, -1] = [10, 20, 30]
         data["robot0_eef_pos"] = np.zeros((1, 3), np.float32)
         data["robot0_eef_quat_xyzw"] = np.array([[0, 0, 0, 1]], np.float32)
         data["robot0_gripper_qpos"] = np.zeros((1, 2), np.float32)
