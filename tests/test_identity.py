@@ -1,9 +1,9 @@
 from types import SimpleNamespace
 
 import pytest
-from test_lifecycle import FakePolicy
 
 from hud_dreamscale.agent import ready_target_artifact, serving_identity
+from tests.test_lifecycle import FakePolicy
 
 
 def test_full_pipeline_candidate_requires_exact_qualified_fingerprint():
