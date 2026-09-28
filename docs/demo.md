@@ -21,7 +21,7 @@ uv run hud-dreamscale --runtime hud --suite libero_spatial \
   --task-ids 0 1 2 --init-state-ids 0 1 --control-hz 20 --max-steps 600
 ```
 
-Use `--region us-west-2` to select Oregon instead of the default Sydney target.
+Oregon (`us-west-2`) is the default; use `--region ap-southeast-2` to select Sydney.
 This command uses your configured accounts. Check `results.json` for the resolved
 checkpoint, TensorRT artifact and region; region selection alone does not pin a
 particular model-server release. The measured artifact is recorded below and in

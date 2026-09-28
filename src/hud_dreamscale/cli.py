@@ -324,7 +324,7 @@ def parser():
         default=CONTROL_HZ,
         help="Actual simulator control rate; attached environments must use the same rate",
     )
-    p.add_argument("--region", default="ap-southeast-2", choices=("ap-southeast-2", "us-west-2"))
+    p.add_argument("--region", default="us-west-2", choices=("ap-southeast-2", "us-west-2"))
     p.add_argument("--task-ids", type=int, nargs="+", choices=range(90), default=[0, 1, 2])
     p.add_argument("--init-state-ids", type=int, nargs="+", choices=(0, 1), default=[0, 1])
     p.add_argument(

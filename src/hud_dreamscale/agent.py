@@ -143,7 +143,7 @@ class DreamscaleRobotAgent(RobotAgent):
     def __init__(
         self,
         *,
-        region="ap-southeast-2",
+        region="us-west-2",
         control_hz=CONTROL_HZ,
         emit=None,
         connector=None,

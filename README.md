@@ -141,9 +141,10 @@ uv run hud-dreamscale --runtime hud
 
 This uses [`HUDRuntime`](https://docs.hud.ai/v6/reference/runtime): the CPU
 environment runs on HUD, while the agent client runs on your machine and talks
-to Dreamscale. The default inference region is Sydney; `--region us-west-2` selects
-Oregon. One connection is retained across the sequential episodes and closed at
-the end. Retaining it is billable; `keep_warm` is zero after close.
+to Dreamscale. The default inference region is Oregon (`us-west-2`);
+`--region ap-southeast-2` selects Sydney. One connection is retained across the
+sequential episodes and closed at the end. Retaining it is billable; `keep_warm`
+is zero after close.
 
 Results go to a new directory under `artifacts/` (or `--output <new-directory>`):
 
