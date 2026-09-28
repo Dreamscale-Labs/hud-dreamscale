@@ -1,4 +1,4 @@
-"""Map HUD's explicit raw LIBERO contract to the published Dreamscale SDK."""
+"""Map HUD's upright LIBERO contract to the published Dreamscale SDK."""
 
 import hashlib
 from dataclasses import dataclass
@@ -31,7 +31,7 @@ class LiberoAdapter(Adapter):
                 if key != "role" and actual.get(key) != value:
                     raise ValueError(f"LIBERO contract mismatch: {name}.{key}")
         if not set((*CAMERAS, "state")).issubset(observation_space):
-            raise ValueError("LIBERO requires raw agent and wrist cameras plus named state")
+            raise ValueError("LIBERO requires agent and wrist cameras plus named state")
         super().bind(action_space, observation_space)
 
     def adapt_observation(self, obs, prompt):
@@ -42,10 +42,11 @@ class LiberoAdapter(Adapter):
         for key in CAMERAS:
             image = np.asarray(data[key])
             if image.dtype != np.uint8 or image.shape != (256, 256, 3):
-                raise ValueError(f"{key} must be raw 256x256 RGB uint8")
-            images.append(image)
+                raise ValueError(f"{key} must be 256x256 RGB uint8")
+            # Dreamscale's LIBERO API takes the raw render buffer, so undo the env's upright turn.
+            images.append(np.ascontiguousarray(image[::-1, ::-1]))
         state = finite_array(data["state"], (8,), "LIBERO state")
-        # Do not rotate or normalize: the SDK's observation.to_wire owns preprocessing.
+        # No further preprocessing: the SDK's observation.to_wire owns it.
         digest = hashlib.sha256(prompt.encode("utf-8") + b"\0")
         for value in (*images, state):
             digest.update(str(value.dtype).encode() + b"\0")

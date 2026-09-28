@@ -55,8 +55,8 @@ so an identical task selection does not promise identical actions.
 The simulator used native Linux/x86-64 CPU physics and OSMesa rendering. Inputs
 were raw 256×256 agent-view and wrist-view RGB frames plus EEF XYZ, axis-angle
 rotation and two gripper positions. Dreamscale applied its LIBERO image transform
-once. HUD videos retain the raw simulator orientation; their displayed rotation
-does not indicate the model's final preprocessed orientation.
+once. That run's HUD videos retain the raw, upside-down simulator orientation;
+the environment now publishes upright frames and the adapter restores the raw buffer.
 
 The preceding final-qualification attempt ended with six integration errors
 before any model actions: the identity check rejected a disconnected worker

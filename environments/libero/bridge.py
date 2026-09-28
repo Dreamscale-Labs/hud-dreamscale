@@ -121,7 +121,11 @@ class LiberoBridge(RobotBridge):
     def get_observation(self):
         if self._obs is None:
             return None
-        data = {key: np.asarray(self._obs[key])[None] for key in CAMERAS}
+        # MuJoCo renders upside down; publish upright camera images like any other env.
+        data = {
+            key: np.ascontiguousarray(np.asarray(self._obs[key])[::-1, ::-1])[None]
+            for key in CAMERAS
+        }
         if self.profile in (POOLED_PROFILE, PI05_PROFILE):
             data.update(
                 {key: value[None] for key, value in pooled_state_from_raw(self._obs).items()}

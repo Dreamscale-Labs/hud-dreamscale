@@ -83,7 +83,7 @@ def build_contract(control_hz=CONTROL_HZ, *, profile=LEGACY_PROFILE):
                     "type": "rgb",
                     "dtype": "uint8",
                     "shape": [resolution, resolution, 3],
-                    "orientation": "libero_raw",
+                    "orientation": "upright",
                     "camera_role": role,
                 }
                 for key, role in zip(CAMERAS, ("agent", "wrist"), strict=True)

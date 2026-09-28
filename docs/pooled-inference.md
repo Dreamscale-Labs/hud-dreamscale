@@ -20,6 +20,7 @@ orchestration code is deliberately not imported.
   HUD owns simulation, grading and traces; Dreamscale owns inference/batching.
 - Use **`dreamscale-libero-pooled`**, profile **`libero-raw360-v1`** at 20 Hz,
   raw 360×360 agent/wrist RGB and raw position/XYZW quaternion/gripper state.
+  The environment publishes upright frames; the adapter restores the raw buffer.
   The server owns orientation, resize and axis-angle conversion. The scalar
   `dreamscale-libero` environment remains 256×256 with its original state format.
 - Ten returned actions are applied through the normal HUD robot driver. Initial
