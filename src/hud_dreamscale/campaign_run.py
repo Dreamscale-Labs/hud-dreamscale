@@ -12,6 +12,7 @@ import json
 import math
 import os
 import time
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -24,6 +25,23 @@ from .runtime_pool import RuntimePool
 from .telemetry import Evidence
 
 PRODUCTION = "https://api.dreamscalelabs.com"
+
+
+@asynccontextmanager
+async def parallel_startup(provider, runtimes, *, emit):
+    """Start independent resources together, then close simulators before compute.
+
+    Each context cleans partial entry on failure. TaskGroup cancels and joins a
+    failed startup's sibling; stacks retain ownership of any successful entry.
+    """
+    started = time.monotonic()
+    emit("resources_starting", startup_mode="parallel")
+    async with AsyncExitStack() as compute, AsyncExitStack() as simulators:
+        async with asyncio.TaskGroup() as group:
+            group.create_task(compute.enter_async_context(provider))
+            group.create_task(simulators.enter_async_context(runtimes))
+        emit("resources_ready", startup_mode="parallel", duration_s=time.monotonic() - started)
+        yield
 
 
 def verify_production_hud(settings):
@@ -186,7 +204,7 @@ async def run(config, output):
     started = time.monotonic()
     try:
         async with asyncio.timeout(config["max_run_seconds"]):
-            async with provider, runtimes:
+            async with parallel_startup(provider, runtimes, emit=evidence.emit):
                 job = await Job.start(f"dreamscale-hud-{config['kind']}-{config['model']}")
                 agent = PooledRobotAgent(provider=provider, runtimes=runtimes, emit=evidence.emit)
                 # Scored cells have an explicit barrier between initial-state waves.

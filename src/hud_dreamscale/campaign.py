@@ -18,6 +18,12 @@ HORIZONS = {
 }
 SCALING = ((1, 1, 8), (8, 1, 8), (16, 1, 16), (32, 4, 8), (64, 8, 8), (128, 8, 16))
 CAPS = {"qualification": 100.0, "vla": 250.0, "wam": 100.0, "recovery": 50.0}
+# Keep CAPS inside the original frozen design unchanged. These execution-only
+# amendments were approved by Chris: $30 recovery -> qualification, then up to
+# $100 additional shared contingency. They do not change tasks or sampling.
+EXECUTION_CAPS = {"qualification": 130.0, "vla": 250.0, "wam": 100.0, "recovery": 20.0}
+CONTINGENCY_USD = 100.0
+TOTAL_CAP_USD = 600.0
 
 
 def digest(value):
@@ -115,12 +121,15 @@ def check_budget(ledger, *, category, estimated_usd):
         if entry["category"] not in CAPS or not math.isfinite(amount) or amount < 0:
             raise ValueError("invalid cost ledger")
         totals[entry["category"]] += amount
-    if (
-        totals[category] + estimated_usd > CAPS[category]
-        or sum(totals.values()) + estimated_usd > 500
-    ):
+    proposed = totals.copy()
+    proposed[category] += estimated_usd
+    contingency_used = sum(max(0, proposed[key] - cap) for key, cap in EXECUTION_CAPS.items())
+    if contingency_used > CONTINGENCY_USD or sum(proposed.values()) > TOTAL_CAP_USD:
         raise ValueError("campaign budget shortfall; report it before changing samples or spending")
-    return CAPS[category] - totals[category] - estimated_usd
+    # Available headroom in this category, including unspent shared contingency.
+    return max(0, EXECUTION_CAPS[category] - proposed[category]) + (
+        CONTINGENCY_USD - contingency_used
+    )
 
 
 def qualify(summary, *, expected=128):

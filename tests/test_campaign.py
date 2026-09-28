@@ -37,10 +37,10 @@ def test_lower_scaling_controls_allowed_but_no_silent_headline_fallback():
 
 
 def test_cost_gate_counts_failed_attempts_and_preserves_reserves():
-    failed = [{"category": "qualification", "liability_usd": 99, "outcome": "failed"}]
+    failed = [{"category": "qualification", "liability_usd": 229, "outcome": "failed"}]
     with pytest.raises(ValueError, match="shortfall"):
         check_budget(failed, category="qualification", estimated_usd=2)
-    assert check_budget(failed, category="vla", estimated_usd=250) == 0
+    assert check_budget(failed, category="vla", estimated_usd=250) == 1
     with pytest.raises(ValueError, match="reserved"):
         check_budget([], category="wam", estimated_usd=1)
 
@@ -236,3 +236,17 @@ def test_resubmission_policy_is_bounded(value):
             },
             [],
         )
+
+
+def test_budget_amendment_preserves_design_and_shares_only_100_contingency():
+    assert digest(design()) == "77c71fa6a37d50960fe7f2c46e1826bc319befb637bb48233c0c4408872c7db0"
+    ledger = [
+        {"category": "qualification", "liability_usd": 150},
+        {"category": "recovery", "liability_usd": 20},
+    ]
+    assert check_budget(ledger, category="vla", estimated_usd=330) == 0
+    with pytest.raises(ValueError, match="shortfall"):
+        check_budget(ledger, category="vla", estimated_usd=330.01)
+    # WAM's untouched $100 cannot be spent just because the total is below $600.
+    with pytest.raises(ValueError, match="shortfall"):
+        check_budget([], category="qualification", estimated_usd=230.01)
