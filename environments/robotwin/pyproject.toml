@@ -11,6 +11,10 @@ dependencies = [
   "toppra",
   "trimesh",
   "open3d",
+  # Imported while loading a RoboTwin task (envs/utils, envs/_base_task.py).
+  "pyyaml",
+  "h5py",
+  "imageio",
 ]
 
 [tool.uv]

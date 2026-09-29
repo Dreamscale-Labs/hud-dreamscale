@@ -22,23 +22,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml patch_wheels.py ./
-# Pin the RoboTwin checkout LeRobot's joint-control wrapper was written against.
+# Checkout and assets stay in their own layer so Python dependency changes do not
+# re-download the dataset. The path script is stdlib-only.
 ARG ROBOTWIN_SHA=0aeea2d669c0f8516f4d5785f0aa33ba812c14b4
-RUN pip install --no-cache-dir uv && uv sync --no-dev \
+RUN pip install --no-cache-dir uv huggingface_hub \
     && git init /opt/RoboTwin \
     && git -C /opt/RoboTwin remote add origin https://github.com/RoboTwin-Platform/RoboTwin.git \
     && git -C /opt/RoboTwin fetch --depth 1 origin ${ROBOTWIN_SHA} \
     && git -C /opt/RoboTwin checkout FETCH_HEAD \
     && rm -rf /opt/RoboTwin/.git \
-    && uv run python -c "from huggingface_hub import hf_hub_download; \
+    && python -c "from huggingface_hub import hf_hub_download; \
 [hf_hub_download('TianxingChen/RoboTwin2.0', name, repo_type='dataset', local_dir='/opt/RoboTwin/assets') \
 for name in ('embodiments.zip', 'objects.zip')]" \
     && cd /opt/RoboTwin/assets && unzip -q -o embodiments.zip && unzip -q -o objects.zip \
     && rm -f embodiments.zip objects.zip \
-    && cd /opt/RoboTwin && /app/.venv/bin/python script/update_embodiment_config_path.py \
-    && ln -sfn curobo_left.yml /opt/RoboTwin/assets/embodiments/aloha-agilex/curobo.yml \
-    && /app/.venv/bin/python /app/patch_wheels.py
+    && cd /opt/RoboTwin && python script/update_embodiment_config_path.py \
+    && ln -sfn curobo_left.yml /opt/RoboTwin/assets/embodiments/aloha-agilex/curobo.yml
+COPY pyproject.toml patch_wheels.py ./
+RUN uv sync --no-dev && /app/.venv/bin/python /app/patch_wheels.py
 # open3d (loaded on reset) links these; they are not needed while building the image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libusb-1.0-0 libtbb12 libidn2-0 libx11-6 libudev1 \
