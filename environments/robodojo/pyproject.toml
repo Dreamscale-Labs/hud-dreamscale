@@ -1,0 +1,11 @@
+[project]
+name = "hud-dreamscale-robodojo"
+version = "0.1.0"
+description = "RoboDojo simulation as a HUD robot environment"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "hud[robot] @ git+https://github.com/hud-evals/hud-python@0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
+]
+
+[tool.uv]
+package = false

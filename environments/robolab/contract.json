@@ -1,0 +1,15 @@
+{
+  "control_rate": 15,
+  "features": {
+    "exterior_image": {"role": "observation", "type": "rgb"},
+    "wrist_image": {"role": "observation", "type": "rgb"},
+    "state": {
+      "role": "observation",
+      "names": ["j1", "j2", "j3", "j4", "j5", "j6", "j7", "gripper"]
+    },
+    "action": {
+      "role": "action",
+      "names": ["j1", "j2", "j3", "j4", "j5", "j6", "j7", "gripper"]
+    }
+  }
+}
