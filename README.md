@@ -232,28 +232,43 @@ workers or sessions make this fallback ambiguous and are rejected.
 ## RoboTwin, RoboLab, and RoboDojo
 
 `environments/robotwin`, `environments/robolab`, and `environments/robodojo` are
-separate HUD simulators. They are not part of the MolmoAct2 LIBERO runner above.
-Each directory has its own `Dockerfile.hud` and is served with `hud serve env.py`
-from that directory. LIBERO stays the repository-root `env.py`. RoboDojo needs
-`ROBODOJO_ROOT` pointing at a checkout whose `Assets/` directory is populated.
-Its HUD action is dual-arm joint position. End-effector planning needs the
-cuRobo submodule; without it the simulator still steps joint targets.
+separate simulators. They are not part of the MolmoAct2 LIBERO runner above.
+LIBERO stays the repository-root `env.py`. Each other directory has its own
+`Dockerfile.hud` and is served with `hud serve env.py` from that directory.
+The agent in each run script is a hold policy. Replace that model to plug in
+the Dreamscale SDK.
 
-RoboTwin renders with Sapien on an NVIDIA GPU. `environments/robotwin/runtime.json`
-is the hosted `RuntimeConfig`: 8 CPUs, 32768 MiB, and one L4. That combination is
-a Modal billing profile. Deploy stores the profile on the build and publishes a
-Modal image. HUD then starts that sandbox for a rollout.
+What runs where:
+
+- **LIBERO, deployed HUD env.** `uv run hud-dreamscale --runtime hud`. The
+  Dreamscale agent stays on this machine. The simulator is the deployed
+  `dreamscale-libero` env.
+- **RoboTwin, Modal.** `uv run python environments/robotwin/run_modal.py`.
+  The simulator is the deployed L4 image. The agent stays on this machine.
+  `HUDRuntime` cannot lease Modal builds (env sessions accept EC2 only), so
+  this uses `ModalRuntime` and a Modal token in `environments/robotwin/.env`
+  (`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`) or in the constants at the top of
+  the script. `HUD_API_KEY` in the same file records the trace on hud.ai.
+  Redeploy with:
 
 ```sh
 uv run hud deploy environments/robotwin --no-env --runtime modal \
   --runtime-config environments/robotwin/runtime.json
 ```
 
-A local robot model is a `HUDRuntime` lease of `dreamscale-robotwin`: the policy
-stays in this process and the simulator stays on the deployed env. HUD env
-sessions currently lease EC2 images only, so this Modal build is rejected
-(`does not support hud_channel sessions`). Hosted rollouts do run the Modal
-sandbox, and they run the agent on that sandbox.
+- **RoboLab and RoboDojo, local GPU.** Isaac Lab does not run on Modal yet.
+  Both scripts use `LocalRuntime` and `cuda:0` on this machine:
+
+```sh
+OMNI_KIT_ACCEPT_EULA=Y python environments/robolab/run.py
+ROBODOJO_ROOT=/path/to/RoboDojo OMNI_KIT_ACCEPT_EULA=YES python environments/robodojo/run.py
+```
+
+RoboDojo needs a checkout whose `Assets/` directory is populated. Its HUD
+action is dual-arm joint position. End-effector planning needs the cuRobo
+submodule; without it the simulator still steps joint targets. RoboTwin
+renders with Sapien. `environments/robotwin/runtime.json` is 8 CPUs, 32768
+MiB, and one L4, which is a Modal billing profile.
 
 ## Verify
 

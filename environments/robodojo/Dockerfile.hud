@@ -1,0 +1,33 @@
+# RoboDojo sim image. Isaac Sim 5.1, Isaac Lab, and the benchmark checkout.
+# Assets stay out of the image: mount them at /opt/RoboDojo/Assets.
+# Joint actions do not install cuRobo. End-effector planning needs third_party/curobo.
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    OMNI_KIT_ACCEPT_EULA=YES \
+    ACCEPT_EULA=Y \
+    ROBODOJO_ROOT=/opt/RoboDojo
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git cmake build-essential ffmpeg libglib2.0-0 libvulkan1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/RoboDojo
+RUN git clone --depth 1 https://github.com/RoboDojo-Benchmark/RoboDojo.git . \
+    && git submodule update --init --depth 1 third_party/IsaacLab
+
+RUN pip install --no-cache-dir uv \
+    && pip install --no-cache-dir torch==2.7.0 torchvision==0.22.0 \
+        --index-url https://download.pytorch.org/whl/cu128 \
+    && pip install --no-cache-dir "isaacsim[all,extscache]==5.1.0" \
+        --extra-index-url https://pypi.nvidia.com \
+    && cd third_party/IsaacLab && ./isaaclab.sh --install none \
+    && pip install --no-cache-dir -r /opt/RoboDojo/scripts/requirements.txt shapely
+
+WORKDIR /app
+COPY pyproject.toml ./
+RUN uv sync --no-dev
+COPY env.py sim.py contract.json ./
+
+EXPOSE 8765
+CMD ["uv", "run", "hud", "serve", "env.py", "--host", "0.0.0.0", "--port", "8765"]

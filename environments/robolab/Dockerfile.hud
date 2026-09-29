@@ -1,0 +1,24 @@
+# RoboLab sim image. Isaac Sim 5.0 + the RoboLab package, then the HUD env.
+# Kit boots on the main thread inside env.gym; the control channel is the usual port.
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    OMNI_KIT_ACCEPT_EULA=Y \
+    ACCEPT_EULA=Y \
+    PRIVACY_CONSENT=Y
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git cmake build-essential ffmpeg libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml ./
+# One venv: HUD first, then RoboLab's Isaac extra into the same environment.
+RUN pip install --no-cache-dir uv && uv sync --no-dev \
+    && git clone --depth 1 https://github.com/NVlabs/RoboLab.git /opt/robolab \
+    && cd /opt/robolab && UV_PROJECT_ENVIRONMENT=/app/.venv uv sync --extra isaac50 --inexact
+COPY env.py sim.py contract.json ./
+ENV PYTHONPATH=/opt/robolab
+
+EXPOSE 8765
+CMD ["uv", "run", "hud", "serve", "env.py", "--host", "0.0.0.0", "--port", "8765"]
