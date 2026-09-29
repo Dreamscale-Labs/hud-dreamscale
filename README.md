@@ -241,13 +241,15 @@ cuRobo submodule; without it the simulator still steps joint targets.
 
 RoboTwin renders with Sapien on an NVIDIA GPU. `environments/robotwin/runtime.json`
 is the hosted `RuntimeConfig`: 8 CPUs, 32768 MiB, and one L4. That combination is
-a Modal billing profile. Deploy it so HUD builds a Modal image and stores the
-profile on the build; later rollouts use it as the default and HUD starts each
-sandbox with that GPU:
+a Modal billing profile. Deploy stores the profile on the build and publishes a
+Modal image. The sandbox is only the simulator. The robot model runs in this
+process. `environments/robotwin/run.py` boots that image and drives it with a
+dummy 14-d joint policy. A Dreamscale policy replaces that model.
 
 ```sh
 uv run hud deploy environments/robotwin --no-env --runtime modal \
   --runtime-config environments/robotwin/runtime.json
+uv run python environments/robotwin/run.py
 ```
 
 ## Verify

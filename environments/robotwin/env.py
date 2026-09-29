@@ -1,4 +1,7 @@
-"""RoboTwin 2.0 on HUD. The simulator's success check is the grade."""
+"""RoboTwin 2.0 on HUD. The simulator's success check is the grade.
+
+This process is the sim. The robot model runs outside it and drives the robot socket.
+"""
 
 from pathlib import Path
 
