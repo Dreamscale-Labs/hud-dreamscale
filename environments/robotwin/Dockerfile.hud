@@ -39,6 +39,10 @@ for name in ('embodiments.zip', 'objects.zip')]" \
     && cd /opt/RoboTwin && /app/.venv/bin/python script/update_embodiment_config_path.py \
     && ln -sfn curobo_left.yml /opt/RoboTwin/assets/embodiments/aloha-agilex/curobo.yml \
     && /app/.venv/bin/python /app/patch_wheels.py
+# open3d (loaded on reset) links these; they are not needed while building the image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libusb-1.0-0 libtbb12 libidn2-0 libx11-6 libudev1 \
+    && rm -rf /var/lib/apt/lists/*
 COPY env.py sim.py contract.json ./
 
 EXPOSE 8765
