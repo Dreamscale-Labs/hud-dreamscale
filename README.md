@@ -242,15 +242,18 @@ cuRobo submodule; without it the simulator still steps joint targets.
 RoboTwin renders with Sapien on an NVIDIA GPU. `environments/robotwin/runtime.json`
 is the hosted `RuntimeConfig`: 8 CPUs, 32768 MiB, and one L4. That combination is
 a Modal billing profile. Deploy stores the profile on the build and publishes a
-Modal image. The sandbox is only the simulator. The robot model runs in this
-process. `environments/robotwin/run.py` boots that image and drives it with a
-dummy 14-d joint policy. A Dreamscale policy replaces that model.
+Modal image. HUD then starts that sandbox for a rollout.
 
 ```sh
 uv run hud deploy environments/robotwin --no-env --runtime modal \
   --runtime-config environments/robotwin/runtime.json
-uv run python environments/robotwin/run.py
 ```
+
+A local robot model is a `HUDRuntime` lease of `dreamscale-robotwin`: the policy
+stays in this process and the simulator stays on the deployed env. HUD env
+sessions currently lease EC2 images only, so this Modal build is rejected
+(`does not support hud_channel sessions`). Hosted rollouts do run the Modal
+sandbox, and they run the agent on that sandbox.
 
 ## Verify
 
