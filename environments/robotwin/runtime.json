@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "cpu": 8,
+    "memory_mb": 32768,
+    "gpu": {"type": "L4", "count": 1}
+  },
+  "limits": {
+    "startup_timeout_s": 900,
+    "run_timeout_s": 1800
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "control_rate": 25,
+  "features": {
+    "pixels/head_camera": {"role": "observation", "type": "rgb"},
+    "pixels/left_camera": {"role": "observation", "type": "rgb"},
+    "pixels/right_camera": {"role": "observation", "type": "rgb"},
+    "agent_pos": {
+      "role": "observation",
+      "names": [
+        "fl_j1", "fl_j2", "fl_j3", "fl_j4", "fl_j5", "fl_j6", "fl_gripper",
+        "fr_j1", "fr_j2", "fr_j3", "fr_j4", "fr_j5", "fr_j6", "fr_gripper"
+      ]
+    },
+    "action": {
+      "role": "action",
+      "names": [
+        "fl_j1", "fl_j2", "fl_j3", "fl_j4", "fl_j5", "fl_j6", "fl_gripper",
+        "fr_j1", "fr_j2", "fr_j3", "fr_j4", "fr_j5", "fr_j6", "fr_gripper"
+      ]
+    }
+  }
+}

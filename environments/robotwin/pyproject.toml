@@ -1,0 +1,19 @@
+[project]
+name = "hud-dreamscale-robotwin"
+version = "0.1.0"
+description = "RoboTwin 2.0 as a HUD robot environment"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "hud[robot] @ git+https://github.com/hud-evals/hud-python@0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
+  "lerobot>=0.6",
+  "sapien==3.0.0b1",
+  "mplib==0.2.1",
+  "toppra",
+  "trimesh",
+  "open3d",
+]
+
+[tool.uv]
+package = false
+# RoboTwin's mplib build needs the NumPy 1.x ABI. LeRobot declares NumPy 2; this override wins.
+override-dependencies = ["numpy==1.26.4", "scipy>=1.11,<1.14"]

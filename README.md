@@ -229,6 +229,27 @@ one ready TensorRT worker and one active session. The sidecar records both the
 session's advertised artifact ID and the verified running artifact. Multiple
 workers or sessions make this fallback ambiguous and are rejected.
 
+## RoboTwin, RoboLab, and RoboDojo
+
+`environments/robotwin`, `environments/robolab`, and `environments/robodojo` are
+separate HUD simulators. They are not part of the MolmoAct2 LIBERO runner above.
+Each directory has its own `Dockerfile.hud` and is served with `hud serve env.py`
+from that directory. LIBERO stays the repository-root `env.py`. RoboDojo needs
+`ROBODOJO_ROOT` pointing at a checkout whose `Assets/` directory is populated.
+Its HUD action is dual-arm joint position. End-effector planning needs the
+cuRobo submodule; without it the simulator still steps joint targets.
+
+RoboTwin renders with Sapien on an NVIDIA GPU. `environments/robotwin/runtime.json`
+is the hosted `RuntimeConfig`: 8 CPUs, 32768 MiB, and one L4. That combination is
+a Modal billing profile. Deploy it so HUD builds a Modal image and stores the
+profile on the build; later rollouts use it as the default and HUD starts each
+sandbox with that GPU:
+
+```sh
+uv run hud deploy environments/robotwin --no-env --runtime modal \
+  --runtime-config environments/robotwin/runtime.json
+```
+
 ## Verify
 
 For independent concurrent simulators sharing HTTP inference, see the additive
