@@ -5,10 +5,25 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     OMNI_KIT_ACCEPT_EULA=Y \
     ACCEPT_EULA=Y \
-    PRIVACY_CONSENT=Y
+    PRIVACY_CONSENT=Y \
+    NVIDIA_DRIVER_CAPABILITIES=all \
+    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json \
+    __GLX_VENDOR_LIBRARY_NAME=nvidia
 
+# Kit's Vulkan loader needs the NVIDIA ICD plus the glvnd EGL loader. Without
+# libegl1, vkCreateInstance fails with ERROR_INCOMPATIBLE_DRIVER on Modal.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git cmake build-essential ffmpeg libglib2.0-0 \
+    git git-lfs cmake build-essential ffmpeg \
+    libgl1 libglib2.0-0 libegl1 libxext6 libsm6 libxrender1 \
+    libglu1-mesa libxt6 libxi6 libxrandr2 libxxf86vm1 libvulkan1 \
+    && mkdir -p /usr/share/vulkan/icd.d /usr/share/glvnd/egl_vendor.d \
+    && printf '%s\n' \
+        '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3.0"}}' \
+        > /usr/share/vulkan/icd.d/nvidia_icd.json \
+    && printf '%s\n' \
+        '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}' \
+        > /usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+    && git lfs install --system \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -16,9 +31,14 @@ COPY pyproject.toml ./
 # One venv: HUD first, then RoboLab's Isaac extra into the same environment.
 RUN pip install --no-cache-dir uv && uv sync --no-dev \
     && git clone --depth 1 https://github.com/NVlabs/RoboLab.git /opt/robolab \
-    && cd /opt/robolab && UV_PROJECT_ENVIRONMENT=/app/.venv uv sync --extra isaac50 --inexact
+    && cd /opt/robolab && git lfs pull \
+    && UV_PROJECT_ENVIRONMENT=/app/.venv uv sync --extra isaac50 --inexact
+# Isaac's sync downgrades packages hud already installed (typing_extensions
+# without TypeForm, cryptography without ML-KEM). Re-apply the HUD env on top
+# without removing Isaac's extra packages.
+RUN uv sync --no-dev --inexact
 COPY env.py sim.py contract.json ./
 ENV PYTHONPATH=/opt/robolab
 
 EXPOSE 8765
-CMD ["uv", "run", "hud", "serve", "env.py", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["uv", "run", "--no-sync", "hud", "serve", "env.py", "--host", "0.0.0.0", "--port", "8765"]

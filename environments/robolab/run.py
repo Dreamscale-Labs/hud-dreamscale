@@ -1,8 +1,8 @@
 """Short RoboLab rollout on a local GPU. With HUD credentials, the job lands on hud.ai.
 
-Isaac has to boot on this machine. Modal cannot run Isaac Lab yet.
-
     OMNI_KIT_ACCEPT_EULA=Y python run.py
+
+For the same episode on Modal, use run_modal.py.
 """
 
 from __future__ import annotations

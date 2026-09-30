@@ -258,19 +258,42 @@ uv run hud deploy environments/robotwin --no-env --runtime modal \
   --runtime-config environments/robotwin/runtime.json
 ```
 
-- **RoboLab and RoboDojo, local GPU.** Isaac Lab does not run on Modal yet.
-  Both scripts use `LocalRuntime` and `cuda:0` on this machine:
+- **RoboLab and RoboDojo, Modal.** Same shape as RoboTwin: the simulator is a
+  Modal GPU sandbox, the hold agent stays on this machine, and `ModalRuntime`
+  tunnels the control channel. Isaac Lab renders through Vulkan, which Modal's
+  gVisor now supports.
+
+```sh
+uv run python environments/robolab/run_modal.py
+uv run python environments/robodojo/run_modal.py
+```
+
+  Credentials are the same as RoboTwin (`environments/<env>/.env`, or the
+  constants at the top of each script). A blank `IMAGE` builds `Dockerfile.hud`
+  on first launch. Redeploy either image with:
+
+```sh
+uv run hud deploy environments/robolab --no-env --runtime modal \
+  --runtime-config environments/robolab/runtime.json
+uv run hud deploy environments/robodojo --no-env --runtime modal \
+  --runtime-config environments/robodojo/runtime.json
+```
+
+- **RoboLab and RoboDojo, local GPU.** Both scripts use `LocalRuntime` and
+  `cuda:0` on this machine:
 
 ```sh
 OMNI_KIT_ACCEPT_EULA=Y python environments/robolab/run.py
 ROBODOJO_ROOT=/path/to/RoboDojo OMNI_KIT_ACCEPT_EULA=YES python environments/robodojo/run.py
 ```
 
-RoboDojo needs a checkout whose `Assets/` directory is populated. Its HUD
-action is dual-arm joint position. End-effector planning needs the cuRobo
-submodule; without it the simulator still steps joint targets. RoboTwin
-renders with Sapien. `environments/robotwin/runtime.json` is 8 CPUs, 32768
-MiB, and one L4, which is a Modal billing profile.
+RoboDojo needs a checkout whose `Assets/` directory is populated. The Modal
+image downloads those assets while it builds. Its HUD action is dual-arm joint
+position. End-effector planning needs the cuRobo submodule; without it the
+simulator still steps joint targets. RoboTwin renders with Sapien. RoboLab and
+RoboDojo render with Isaac Lab. `environments/robotwin/runtime.json` is 8 CPUs,
+32768 MiB, and one L4. The Isaac images use one L40S and 49152 MiB, because Kit
+needs the extra memory while it compiles shaders.
 
 ## Verify
 
