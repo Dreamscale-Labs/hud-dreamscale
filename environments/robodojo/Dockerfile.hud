@@ -6,10 +6,25 @@ FROM python:3.11-slim
 ENV PYTHONUNBUFFERED=1 \
     OMNI_KIT_ACCEPT_EULA=YES \
     ACCEPT_EULA=Y \
-    ROBODOJO_ROOT=/opt/RoboDojo
+    ROBODOJO_ROOT=/opt/RoboDojo \
+    NVIDIA_DRIVER_CAPABILITIES=all \
+    VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json \
+    __GLX_VENDOR_LIBRARY_NAME=nvidia
 
+# Kit's Vulkan loader needs the NVIDIA ICD plus the glvnd EGL loader. Without
+# libegl1, vkCreateInstance fails with ERROR_INCOMPATIBLE_DRIVER on Modal.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git cmake build-essential ffmpeg libglib2.0-0 libvulkan1 \
+    git git-lfs cmake build-essential ffmpeg \
+    libgl1 libglib2.0-0 libegl1 libxext6 libsm6 libxrender1 \
+    libglu1-mesa libxt6 libxi6 libxrandr2 libxxf86vm1 libvulkan1 \
+    && mkdir -p /usr/share/vulkan/icd.d /usr/share/glvnd/egl_vendor.d \
+    && printf '%s\n' \
+        '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3.0"}}' \
+        > /usr/share/vulkan/icd.d/nvidia_icd.json \
+    && printf '%s\n' \
+        '{"file_format_version":"1.0.0","ICD":{"library_path":"libEGL_nvidia.so.0"}}' \
+        > /usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+    && git lfs install --system \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/RoboDojo
@@ -22,12 +37,16 @@ RUN pip install --no-cache-dir uv \
     && pip install --no-cache-dir "isaacsim[all,extscache]==5.1.0" \
         --extra-index-url https://pypi.nvidia.com \
     && cd third_party/IsaacLab && ./isaaclab.sh --install none \
-    && pip install --no-cache-dir -r /opt/RoboDojo/scripts/requirements.txt shapely
+    && pip install --no-cache-dir -r /opt/RoboDojo/scripts/requirements.txt shapely \
+    && bash /opt/RoboDojo/scripts/init_assets.sh
 
 WORKDIR /app
 COPY pyproject.toml ./
-RUN uv sync --no-dev
+# Isaac Sim and Isaac Lab are installed into the image Python. The HUD venv
+# has to see them, or `import isaaclab` fails inside the sandbox.
+RUN uv venv /app/.venv --python /usr/local/bin/python3.11 --system-site-packages \
+    && uv sync --no-dev --inexact
 COPY env.py sim.py contract.json ./
 
 EXPOSE 8765
-CMD ["uv", "run", "hud", "serve", "env.py", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["uv", "run", "--no-sync", "hud", "serve", "env.py", "--host", "0.0.0.0", "--port", "8765"]

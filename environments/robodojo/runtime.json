@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "cpu": 8,
+    "memory_mb": 49152,
+    "gpu": {"type": "L40S", "count": 1}
+  },
+  "limits": {
+    "startup_timeout_s": 1800,
+    "run_timeout_s": 3600
+  }
+}
