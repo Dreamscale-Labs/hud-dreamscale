@@ -272,7 +272,23 @@ class DreamscalePolicy:
         def progress(message: str) -> None:
             print(f"[dreamscale {label}] {message}", file=sys.stderr, flush=True)
 
-        policy = await connect(self.model, **self.connect_kwargs(), on_progress=progress)
+        # Retry session admission a few times: a kept-warm worker can go offline
+        # just as a new session claims it ("the GPU worker failed to start"), and
+        # a capped route can briefly have no free container (CapacityError).
+        # Nothing has stepped yet, so retrying cannot affect the episode.
+        attempts = 4
+        for attempt in range(1, attempts + 1):
+            try:
+                policy = await connect(self.model, **self.connect_kwargs(), on_progress=progress)
+                break
+            except Exception as error:
+                retryable = type(error).__name__ == "CapacityError" or (
+                    "failed to start" in str(error) or "failed before it became ready" in str(error)
+                )
+                if attempt == attempts or not retryable:
+                    raise
+                progress(f"session admission failed ({error}); retrying {attempt}/{attempts - 1}")
+                await asyncio.sleep(20 * attempt)
         return DreamscaleSession(policy, predict_timeout_s=self.predict_timeout_s)
 
 
