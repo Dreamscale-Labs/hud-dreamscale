@@ -32,8 +32,13 @@ def episodes(run_dirs: list[Path]) -> list[dict]:
             if not video or not (run / video).is_file():
                 continue
             rows.append({**episode, "video_path": run / video})
-    rows.sort(key=lambda e: (e["task_name"], e["episode"]))
-    return rows
+    # One tile per (task, episode): retries replace pre-launch failures.
+    best: dict[tuple[str, int], dict] = {}
+    for row in rows:
+        key = (row["task_name"], row["episode"])
+        if key not in best or (row.get("steps") or 0) > (best[key].get("steps") or 0):
+            best[key] = row
+    return sorted(best.values(), key=lambda e: (e["task_name"], e["episode"]))
 
 
 def reader(path: Path, view: str, width: int, height: int):
