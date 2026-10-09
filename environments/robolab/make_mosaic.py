@@ -119,9 +119,10 @@ def main() -> None:
         raise SystemExit("ffmpeg failed")
     for proc in readers:
         proc.wait()
-    print(json.dumps({"output": str(args.output), "episodes": len(rows), "grid": [columns, grid_rows],
-                      "size": [width, height], "fps": fps, "frames": step,
-                      "successes": sum(bool(r.get("success")) for r in rows)}))
+    report = {"output": str(args.output), "episodes": len(rows), "grid": [columns, grid_rows],
+              "size": [width, height], "fps": fps, "frames": step,
+              "successes": sum(bool(r.get("success")) for r in rows)}
+    print(json.dumps(report))
 
 
 if __name__ == "__main__":
