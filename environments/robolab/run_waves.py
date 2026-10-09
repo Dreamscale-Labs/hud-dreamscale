@@ -50,7 +50,7 @@ from summary import aggregate, episode_record, job_url, read_inference_rows  # n
 ENV_NAME = "dreamscale-robolab"
 #: Image built from Dockerfile.hud (RoboLab ad45d4f) with ``build_image.py``.
 #: Override with --image, or pass --build-image to build Dockerfile.hud now.
-IMAGE = os.environ.get("ROBOLAB_MODAL_IMAGE", "")
+IMAGE = os.environ.get("ROBOLAB_MODAL_IMAGE", "modal://im-p0jN9zrruXkRAg7r9Uql1g")
 CONTROL_PLANES = {
     "prod": "https://api.dreamscalelabs.com",
     "dev": "https://api-dev.dreamscalelabs.com",
@@ -196,8 +196,14 @@ def make_runtime(image: str, *, build: bool):
     )
 
 
-async def ensure_sandboxes_stopped(sandboxes: dict[str, dict[str, Any]]) -> list[str]:
-    """Belt and braces after ModalRuntime's own teardown: terminate any survivor."""
+async def ensure_sandboxes_stopped(
+    sandboxes: dict[str, dict[str, Any]], *, grace_s: float = 60.0
+) -> list[str]:
+    """Belt and braces after ModalRuntime's own teardown: terminate any survivor.
+
+    ``terminate`` is asynchronous on Modal's side, so give each sandbox a grace
+    period to report an exit code before terminating it again.
+    """
     import modal
 
     survivors = []
@@ -207,7 +213,13 @@ async def ensure_sandboxes_stopped(sandboxes: dict[str, dict[str, Any]]) -> list
             continue
         try:
             sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
-            if await sandbox.poll.aio() is None:
+            deadline = time.monotonic() + grace_s
+            code = await sandbox.poll.aio()
+            while code is None and time.monotonic() < deadline:
+                await asyncio.sleep(2.0)
+                code = await sandbox.poll.aio()
+            entry["exit_code"] = code
+            if code is None:
                 survivors.append(sandbox_id)
                 await sandbox.terminate.aio()
                 entry["terminated_by_runner"] = True
@@ -260,12 +272,16 @@ def run_view(run: Any) -> dict[str, Any]:
     }
 
 
+def _trace_key(trace_id: str) -> str:
+    return trace_id.replace("-", "").lower()
+
+
 def load_agent_summaries(output: Path) -> dict[str, dict[str, Any]]:
     found = {}
     for path in sorted((output / "episodes").glob("*/episode.json")):
         data = json.loads(path.read_text())
         if data.get("trace_id"):
-            found[data["trace_id"]] = data
+            found[_trace_key(data["trace_id"])] = data
     return found
 
 
@@ -338,9 +354,10 @@ async def run_wave(args: argparse.Namespace) -> dict[str, Any]:
     for run in job.runs:
         task = by_slug.get(run.slug)
         if task is None:
+            print(f"[wave] run with unknown slug {run.slug!r} skipped", flush=True)
             continue
         view = run_view(run)
-        agent_summary = agents.get(view["trace_id"])
+        agent_summary = agents.get(_trace_key(view["trace_id"] or ""))
         records.append(
             episode_record(
                 task_name=task.args["task_name"],

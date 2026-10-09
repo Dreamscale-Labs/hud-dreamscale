@@ -40,6 +40,7 @@ from typing import Any, Protocol
 import numpy as np
 from hud.agents.robot.agent import RobotAgent
 from hud.capabilities.robot import RobotClient
+from hud.telemetry.context import get_current_trace_id
 from hud.telemetry.robot import TraceRecorder
 
 MODELS = ("cosmos3-nano-policy-droid", "flux-3-action-droid")
@@ -413,14 +414,16 @@ class RobolabDreamscaleAgent(RobotAgent):
         if self.max_steps_cap is not None:
             limit = min(limit, self.max_steps_cap)
 
-        slug = episode_slug(task_name, episode, run.trace_id)
+        # The rollout binds the trace id in context; Run.trace_id fills in later.
+        trace_id = run.trace_id or get_current_trace_id()
+        slug = episode_slug(task_name, episode, trace_id)
         episode_dir = self.output_dir / "episodes" / slug
         log = TimingLog(episode_dir / "timing.jsonl", started=started)
         log.emit(
             "agent_started",
             task_name=task_name,
             episode=episode,
-            trace_id=run.trace_id,
+            trace_id=trace_id,
             model=self.policy.model,
             max_steps=limit,
             instruction=prompt,
@@ -428,7 +431,7 @@ class RobolabDreamscaleAgent(RobotAgent):
         summary: dict[str, Any] = {
             "task_name": task_name,
             "episode": episode,
-            "trace_id": run.trace_id,
+            "trace_id": trace_id,
             "model": self.policy.model,
             "instruction": prompt,
             "max_steps": limit,
@@ -519,14 +522,17 @@ class RobolabDreamscaleAgent(RobotAgent):
         rtts: list[float] = []
         server_ms: list[float] = []
         step_ms: list[float] = []
+        record_ms: list[float] = []
         requests = 0
         steps = 0
         terminated = False
         loop_started = time.monotonic()
         for tick in range(limit):
+            recording = time.monotonic()
             recorder.record_observation(obs["data"], tick=tick)
             if video is not None:
                 await asyncio.to_thread(video.write, composite_frame(obs["data"]))
+            record_ms.append((time.monotonic() - recording) * 1000.0)
             if bool(np.asarray(obs["terminated"]).reshape(-1)[0]):
                 terminated = True
                 break
@@ -568,6 +574,9 @@ class RobolabDreamscaleAgent(RobotAgent):
                 "loop_wall_s": time.monotonic() - loop_started,
                 "sdk_rtt_ms": latency_stats(rtts),
                 "server_inference_ms": latency_stats(server_ms),
+                # Action sent -> next observation received: sim compute + transfer.
                 "sim_step_ms": latency_stats(step_ms),
+                # Local trace recording and MP4 encoding per tick (not sim time).
+                "agent_record_ms": latency_stats(record_ms),
             }
         )

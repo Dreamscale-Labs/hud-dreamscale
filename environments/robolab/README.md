@@ -9,9 +9,10 @@ for a no-inference smoke.
 ## Run a wave
 
 ```sh
-# Once: build the sim image (RoboLab ad45d4f, Isaac Sim 5.0) and note the id.
-uv run --project environments/robolab python environments/robolab/build_image.py
-export ROBOLAB_MODAL_IMAGE=modal://im-...
+# The sim image (RoboLab ad45d4f, Isaac Sim 5.0) is prebuilt; the default id is
+# in run_waves.py. Only after changing env.py / sim.py / Dockerfile.hud:
+#   uv run --project environments/robolab python environments/robolab/build_image.py
+#   export ROBOLAB_MODAL_IMAGE=modal://im-...
 
 # Dreamscale key for the chosen control plane (never printed or written to the repo).
 set -a; . ~/.config/dreamscale/test.env; set +a      # prod; dev.env for --env dev
@@ -82,8 +83,18 @@ HUD keeps the canonical trace with per-camera video and every executed chunk.
 - `dreamscale==0.1.0a56` has no client-side FLUX contract entry; the server
   is authoritative and the agent checks 32x8 and finiteness itself.
 - Every observation (3 x 640x360 RGB) travels from the sandbox to this machine
-  each step (~2 MB, ~1.5 GB for a 750-step episode). At high concurrency the
-  local downlink bounds wall-clock, not simulated time or scores.
+  each step (~2 MB, ~1.5 GB for a 750-step episode). Measured with the hold
+  smoke: Isaac step ~171 ms + packing ~20 ms in the sandbox, ~700 ms per step
+  as seen by the agent, so transfer dominates wall-clock (a 750-step episode
+  takes ~9 min, plus ~5 min sandbox boot and scene build). It never affects
+  simulated time or scores. For big waves, run the runner on a well-connected
+  host (e.g. us-west-2, next to inference) and keep concurrency within the
+  downlink (~10 episodes ≈ 200+ Mbit/s).
+- Modal cost is roughly $2.7 per sandbox-hour (L40S + 8 CPU + 48 GiB); the
+  summary's `modal.estimated_usd` uses list prices, the dashboard is the bill.
+  One pass over all ten tasks is ~8,550 steps, about 2.5 sandbox-hours here.
+- The default image id lives in `run_waves.py` (`ROBOLAB_MODAL_IMAGE` overrides);
+  rebuild with `build_image.py` after changing `env.py` / `sim.py`.
 - The sandbox is terminated by `ModalRuntime` at the end of each episode; the
   runner re-checks every sandbox id it saw and terminates any survivor.
 

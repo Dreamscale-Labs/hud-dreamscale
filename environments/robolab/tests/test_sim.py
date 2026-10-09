@@ -79,6 +79,8 @@ def test_env_applies_action_and_ends_when_robolab_freezes(fake_isaac_runtime):
     assert report["robolab_score"] == 0.5
     assert report["max_episode_length"] == 750
     assert report["task_name"] == "BananaInBowlTask"
+    assert report["sim_compute_ms"]["isaac_step"]["n"] == 2
+    assert report["sim_compute_ms"]["pack_observation"]["n"] == 2
 
 
 def test_time_limit_is_truncation_not_success(fake_isaac_runtime):

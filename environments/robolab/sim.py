@@ -25,6 +25,7 @@ it without Omniverse.
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -185,6 +186,9 @@ class RobolabEnv(gym.Env):
         self._steps = 0
         self._subtask_info: dict[str, Any] | None = None
         self._env_result: dict[str, Any] | None = None
+        # Sim-side wall time per step (Isaac physics + render, then packing).
+        self._step_ms: list[float] = []
+        self._pack_ms: list[float] = []
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         del options
@@ -198,6 +202,8 @@ class RobolabEnv(gym.Env):
         self._steps = 0
         self._subtask_info = None
         self._env_result = None
+        self._step_ms.clear()
+        self._pack_ms.clear()
         return pack_observation(obs), {"is_success": False}
 
     def step(self, action):
@@ -207,7 +213,9 @@ class RobolabEnv(gym.Env):
         act = torch.as_tensor(np.asarray(action, dtype=np.float32), device=self._isaac.device)
         if act.ndim == 1:
             act = act[None]
+        started = time.perf_counter()
         obs, reward, _terminated, _truncated, _info = self._isaac.step(act)
+        self._step_ms.append((time.perf_counter() - started) * 1000.0)
         self._steps += 1
         self._subtask_info = self._current_subtask_info()
         # RoboLab freezes an env when it terminates (success term or time limit)
@@ -220,9 +228,20 @@ class RobolabEnv(gym.Env):
             success = bool(self._env_result.get("success"))
         step_reward = float(np.asarray(_to_numpy(reward)).reshape(-1)[0])
         info = {"is_success": success}
-        return pack_observation(obs), step_reward, done and success, done and not success, info
+        started = time.perf_counter()
+        packed = pack_observation(obs)
+        self._pack_ms.append((time.perf_counter() - started) * 1000.0)
+        return packed, step_reward, done and success, done and not success, info
 
     def report(self) -> dict[str, Any]:
+        report = self._verdict()
+        report["sim_compute_ms"] = {
+            "isaac_step": timing_stats(self._step_ms),
+            "pack_observation": timing_stats(self._pack_ms),
+        }
+        return report
+
+    def _verdict(self) -> dict[str, Any]:
         events = None
         try:
             from robolab.core.logging.results import get_all_env_events
@@ -260,6 +279,19 @@ class RobolabEnv(gym.Env):
         app = omni.kit.app.get_app()
         while not timeline.is_playing():
             app.update()
+
+
+def timing_stats(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"n": 0}
+    arr = np.asarray(values, dtype=np.float64)
+    return {
+        "n": int(arr.size),
+        "mean": float(arr.mean()),
+        "p50": float(np.percentile(arr, 50)),
+        "p95": float(np.percentile(arr, 95)),
+        "max": float(arr.max()),
+    }
 
 
 def _int_or_none(value: Any) -> int | None:

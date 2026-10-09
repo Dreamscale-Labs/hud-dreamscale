@@ -27,7 +27,7 @@ MODAL_TOKEN_ID = ""
 MODAL_TOKEN_SECRET = ""
 
 # Image from `hud deploy --runtime modal`. Blank builds Dockerfile.hud instead.
-IMAGE = "modal://im-WYmDQyY7iIcN7dyx204Ww2"
+IMAGE = "modal://im-p0jN9zrruXkRAg7r9Uql1g"
 
 HERE = Path(__file__).parent
 

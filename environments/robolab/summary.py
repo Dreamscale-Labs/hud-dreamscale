@@ -79,6 +79,8 @@ def episode_record(
         "sdk_rtt_ms": agent.get("sdk_rtt_ms"),
         "server_inference_ms": agent.get("server_inference_ms"),
         "sim_step_ms": agent.get("sim_step_ms"),
+        "agent_record_ms": agent.get("agent_record_ms"),
+        "sim_compute_ms": info.get("sim_compute_ms"),
         "timing": {
             "sandbox_boot_s": _delta(sandbox.get("requested_unix"), sandbox.get("ready_unix")),
             "sandbox_ready_to_agent_s": _delta(

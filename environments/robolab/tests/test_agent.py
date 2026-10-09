@@ -360,3 +360,17 @@ def test_latency_stats():
     assert stats["n"] == 4 and stats["p50"] == 25.0 and stats["max"] == 40.0
     assert stats["p95"] == pytest.approx(38.5)
     assert da.latency_stats([]) == {"n": 0}
+
+
+async def test_trace_id_falls_back_to_rollout_context(tmp_path, patched_io, monkeypatch):
+    patched_io(terminate_after=1)
+    monkeypatch.setattr(da, "get_current_trace_id", lambda: "fedcba98-7654-3210")
+    run = fake_run()
+    run.trace_id = None
+    agent = da.RobolabDreamscaleAgent(da.HoldPolicy(), output_dir=tmp_path, local_video=False)
+    await agent(run)
+    (path,) = (tmp_path / "episodes").glob("*/episode.json")
+    assert path.parent.name.endswith("__fedcba98")
+    data = json.loads(path.read_text())
+    assert data["trace_id"] == "fedcba98-7654-3210"
+    assert data["agent_record_ms"]["n"] == 2
