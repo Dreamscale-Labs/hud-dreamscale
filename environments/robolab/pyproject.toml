@@ -14,7 +14,7 @@ dependencies = [
 # entry (the server is authoritative); the agent validates 32x8 itself.
 [dependency-groups]
 dev = [
-  "dreamscale==0.1.0a56",
+  "dreamscale==0.1.0a58",
   "hud[robot,modal] @ git+https://github.com/hud-evals/hud-python@0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
   "python-dotenv>=1",
   "pytest>=8.3,<9",
