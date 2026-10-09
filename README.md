@@ -238,7 +238,9 @@ separate simulators. They are not part of the MolmoAct2 LIBERO runner above.
 LIBERO stays the repository-root `env.py`. Each other directory has its own
 `Dockerfile.hud` and is served with `hud serve env.py` from that directory.
 The agent in each run script is a hold policy. Replace that model to plug in
-the Dreamscale SDK.
+the Dreamscale SDK. RoboLab already has one: `environments/robolab/run_waves.py`
+runs its DROID tasks with Dreamscale's Cosmos / FLUX DROID policies as a HUD
+wave; see `environments/robolab/README.md`.
 
 What runs where:
 

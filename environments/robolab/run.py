@@ -36,7 +36,7 @@ class HoldAgent(RobotAgent):
 
 
 async def main() -> None:
-    job = await episode(task_name="RubiksCubeTask", seed=0).run(
+    job = await episode(task_name="BananaInBowlTask", episode=0).run(
         HoldAgent(),
         runtime=LocalRuntime(Path(__file__).parent / "env.py", ready_timeout=900.0),
     )

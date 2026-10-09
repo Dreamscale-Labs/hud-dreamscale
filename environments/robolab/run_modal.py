@@ -92,7 +92,7 @@ async def main() -> None:
     task = Task(
         env="dreamscale-robolab",
         id="episode",
-        args={"task_name": "RubiksCubeTask", "seed": 0, "instruction_type": "default"},
+        args={"task_name": "BananaInBowlTask", "episode": 0, "instruction_type": "default"},
     )
     print("[modal] launching RoboLab sandbox", flush=True)
     # Must exceed runtime.json run_timeout_s (3600). The hold episode is much shorter.

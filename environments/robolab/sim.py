@@ -1,24 +1,56 @@
-"""RoboLab (Isaac Lab) gym factory for ``env.gym``.
+"""RoboLab (Isaac Lab) DROID gym factory and bridge for ``env.gym``.
 
-Kit boots inside this factory, on the sim process main thread. Importing this
-module does not start the simulator, so the agent can load the task template
-without launching Omniverse.
+The scene, cameras, observation preprocessing and scoring follow RoboLab's own
+Cosmos DROID evaluation at the pinned revision (``policies/cosmos3/run.py`` and
+``policies/cosmos3/client.py``), which is also what Dreamscale's
+``integrations/cosmos3-robolab`` client sends to the policy:
+
+- the task is registered with ``auto_register_droid_envs(cameras=WRIST_LEFT_RIGHT_HEAD)``;
+- the two over-shoulder views and the wrist view are published as
+  ``exterior_1_left`` / ``exterior_2_left`` / ``wrist_left``, each passed
+  through RoboLab's ``resize_with_pad`` to 640x360 exactly as ``Cosmos3Client``
+  does before packing a request (RoboLab renders 1280x720, so this is a plain
+  2x downscale, no padding);
+- state is the 7 Franka joint positions (rad) plus RoboLab's gripper closed
+  fraction in [0, 1];
+- an episode ends when RoboLab freezes the env (success term or its own time
+  limit); success and the termination step come from ``env.get_env_results()``
+  and the score from RoboLab's subtask state machine, as in ``robolab.eval``.
+
+Kit boots inside the factory, on the sim process main thread. Importing this
+module does not start the simulator, so the env server and the tests can load
+it without Omniverse.
 """
 
+from __future__ import annotations
+
 import os
+from collections.abc import Callable
+from typing import Any
 
 import gymnasium as gym
 import numpy as np
+from hud.environment.robot.gym import GymBridge
 
 _APP = None
-_REGISTERED = set()
+_REGISTERED: set[str] = set()
 
-# Contract feature -> RoboLab camera term (WRIST_LEFT preset).
-EXTERIOR_CAM = "over_shoulder_left_camera"
-WRIST_CAM = "wrist_cam"
+#: Contract feature -> RoboLab camera term (WRIST_LEFT_RIGHT_HEAD preset). The
+#: feature names are the DROID policy slots Dreamscale maps them to.
+CAMERAS = {
+    "exterior_1_left": "over_shoulder_left_camera",
+    "exterior_2_left": "over_shoulder_right_camera",
+    "wrist_left": "wrist_cam",
+}
+#: ``Cosmos3Client.IMAGE_H`` / ``IMAGE_W``.
+IMAGE_H, IMAGE_W = 360, 640
+STATE_DIM = 8
+POLICY_LABEL = "dreamscale_hud"
+
+Resize = Callable[[np.ndarray, int, int], np.ndarray]
 
 
-def _boot():
+def _boot() -> None:
     """Start headless Kit once, before any isaaclab or robolab import."""
     global _APP
     if _APP is not None:
@@ -34,73 +66,100 @@ def _boot():
     )
 
 
-def _register(task_name):
-    """Register one task against the native DROID joint-position action."""
+def _register(task_name: str) -> str:
+    """Register one task exactly as RoboLab's Cosmos runner and Dreamscale's client do."""
     import robolab.constants
-    from robolab.core.environments.factory import auto_discover_and_create_cfgs, get_envs
-    from robolab.core.observations.observation_utils import (
-        generate_image_obs_from_cameras,
-        generate_obs_cfg,
+    from robolab.core.environments.factory import get_envs
+    from robolab.registrations.droid.auto_env_registrations_jointpos import (
+        auto_register_droid_envs,
     )
-    from robolab.registrations.droid.camera_presets import WRIST_LEFT
-    from robolab.robots.droid import (
-        DroidCfg,
-        DroidJointPositionActionCfg,
-        ProprioceptionObservationCfg,
-        WristCameraCfg,
-        contact_gripper,
-    )
-    from robolab.variations.backgrounds import HomeOfficeBackgroundCfg
-    from robolab.variations.camera import EgocentricMirroredCameraCfg
-    from robolab.variations.lighting import SphereLightCfg
+    from robolab.registrations.droid.camera_presets import WRIST_LEFT_RIGHT_HEAD
 
-    # Fractional subtask progress is the step reward. Off by default in RoboLab.
+    # The pinned default, set explicitly: the score comes from subtask tracking.
     robolab.constants.ENABLE_SUBTASK_PROGRESS_CHECKING = True
     if task_name not in _REGISTERED:
-        image_obs = generate_image_obs_from_cameras(WRIST_LEFT)
-        viewport = generate_image_obs_from_cameras([EgocentricMirroredCameraCfg])
-        obs_cfg = generate_obs_cfg(
-            {
-                "image_obs": image_obs(),
-                "proprio_obs": ProprioceptionObservationCfg(),
-                "viewport_cam": viewport(),
-            }
-        )
-        scene_cameras = [cam for cam in WRIST_LEFT if cam is not WristCameraCfg]
-        auto_discover_and_create_cfgs(
-            task_subdirs=robolab.constants.DEFAULT_TASK_SUBFOLDERS,
-            tasks=[task_name],
-            observations_cfg=obs_cfg(),
-            actions_cfg=DroidJointPositionActionCfg(),
-            robot_cfg=DroidCfg,
-            camera_cfg=[*scene_cameras, EgocentricMirroredCameraCfg],
-            lighting_cfg=SphereLightCfg,
-            background_cfg=HomeOfficeBackgroundCfg,
-            contact_gripper=contact_gripper,
-            dt=1 / 120,
-            render_interval=8,
-            decimation=8,
-            seed=1,
-        )
+        auto_register_droid_envs(task=[task_name], cameras=WRIST_LEFT_RIGHT_HEAD)
         _REGISTERED.add(task_name)
     return get_envs(task=[task_name])[0]
 
 
-def _pack(obs):
-    """Isaac tensors -> the flat camera + joint layout the contract advertises."""
-    from robolab.core.observations.observation_utils import unpack_image_obs, unpack_proprio_obs
+def _robolab_resize(image: np.ndarray, height: int, width: int) -> np.ndarray:
+    from robolab.core.utils.image_utils import resize_with_pad
 
-    images = unpack_image_obs(obs, env_id=0)
-    proprio = unpack_proprio_obs(obs, env_id=0)
+    return resize_with_pad(image, height, width)
+
+
+def _to_numpy(value: Any) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def pack_observation(raw_obs: dict[str, Any], *, resize: Resize | None = None) -> dict[str, Any]:
+    """Isaac observation (batch of one) -> the three cameras and 8-d state.
+
+    Mirrors ``Cosmos3Client._extract_observation`` for env 0: the same camera
+    terms, the same ``resize_with_pad`` to 640x360, and the same proprio terms.
+    """
+    resize = resize or _robolab_resize
+    images = raw_obs["image_obs"]
+    proprio = raw_obs["proprio_obs"]
+    out: dict[str, Any] = {}
+    for feature, camera in CAMERAS.items():
+        frame = _to_numpy(images[camera][0])
+        if frame.ndim != 3 or frame.shape[-1] != 3:
+            raise ValueError(f"{camera} must be HxWx3, got {frame.shape}")
+        frame = resize(np.ascontiguousarray(frame.astype(np.uint8, copy=False)), IMAGE_H, IMAGE_W)
+        out[feature] = np.ascontiguousarray(frame, dtype=np.uint8)
+    joints = _to_numpy(proprio["arm_joint_pos"][0]).astype(np.float32).reshape(-1)
+    gripper = _to_numpy(proprio["gripper_pos"][0]).astype(np.float32).reshape(-1)
+    if joints.size != 7 or gripper.size != 1:
+        raise ValueError(f"expected 7 joints + 1 gripper, got {joints.size} + {gripper.size}")
+    out["state"] = np.concatenate([joints, gripper])
+    return out
+
+
+def episode_report(
+    *,
+    env_result: dict[str, Any] | None,
+    subtask_info: dict[str, Any] | None,
+    events: list[dict[str, Any]] | None,
+    steps_executed: int,
+    max_episode_length: int | None,
+    task_name: str,
+    instruction: str,
+) -> dict[str, Any]:
+    """RoboLab's per-episode verdict, shaped like ``robolab.eval.summarize`` fields."""
+    env_result = env_result or {}
+    success = bool(env_result.get("success"))
+    score = None if subtask_info is None else subtask_info.get("score")
+    events = list(events or [])
+    reason = None
+    if events:
+        reason = events[-1].get("info")
+        if success:
+            reason = next(
+                (
+                    e.get("info")
+                    for e in reversed(events)
+                    if e.get("info") and e.get("code", 0) < 200
+                ),
+                reason,
+            )
     return {
-        "exterior_image": np.asarray(images[EXTERIOR_CAM]),
-        "wrist_image": np.asarray(images[WRIST_CAM]),
-        "state": np.concatenate(
-            [
-                np.asarray(proprio["arm_joint_pos"], dtype=np.float32).reshape(-1),
-                np.asarray(proprio["gripper_pos"], dtype=np.float32).reshape(-1),
-            ]
-        ),
+        "task_name": task_name,
+        "instruction": instruction,
+        "success": success,
+        "terminated_by_robolab": env_result.get("success") is not None,
+        "robolab_score": None if score is None else float(score),
+        "robolab_episode_step": env_result.get("step"),
+        "steps": int(steps_executed),
+        "max_episode_length": max_episode_length,
+        "reason": reason,
+        "subtask": None
+        if subtask_info is None
+        else {k: subtask_info.get(k) for k in ("status", "info", "completed", "total", "score")},
+        "num_events": len(events),
     }
 
 
@@ -109,25 +168,37 @@ class RobolabEnv(gym.Env):
 
     metadata = {"render_fps": 15}
 
-    def __init__(self, isaac, instruction):
+    def __init__(self, isaac: Any, instruction: str, task_name: str = "") -> None:
         self._isaac = isaac
+        self.task_name = task_name
         self.task_description = instruction
         dim = int(isaac.action_manager.total_action_dim)
         self.action_space = gym.spaces.Box(-np.inf, np.inf, shape=(dim,), dtype=np.float32)
-        # Shapes are advisory; the contract is taken from the arrays the sim returns.
+        # Shapes are advisory; the contract is taken from contract.json.
+        image = gym.spaces.Box(0, 255, shape=(IMAGE_H, IMAGE_W, 3), dtype=np.uint8)
         self.observation_space = gym.spaces.Dict(
             {
-                "exterior_image": gym.spaces.Box(0, 255, shape=(720, 1280, 3), dtype=np.uint8),
-                "wrist_image": gym.spaces.Box(0, 255, shape=(720, 1280, 3), dtype=np.uint8),
-                "state": gym.spaces.Box(-np.inf, np.inf, shape=(dim,), dtype=np.float32),
+                **{name: image for name in CAMERAS},
+                "state": gym.spaces.Box(-np.inf, np.inf, shape=(STATE_DIM,), dtype=np.float32),
             }
         )
+        self._steps = 0
+        self._subtask_info: dict[str, Any] | None = None
+        self._env_result: dict[str, Any] | None = None
 
-    def reset(self, *, seed=None, options=None):
-        # A second reset lets the tiled cameras publish a frame from this scene.
+    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
+        del options
+        reset_eval_state = getattr(self._isaac, "reset_eval_state", None)
+        if reset_eval_state is not None:
+            reset_eval_state()
+        # robolab.eval.episode.run_episode resets twice so the tiled cameras
+        # publish a frame from this scene; do the same.
         self._isaac.reset(seed=seed)
         obs, _info = self._isaac.reset(seed=seed)
-        return _pack(obs), {"is_success": False}
+        self._steps = 0
+        self._subtask_info = None
+        self._env_result = None
+        return pack_observation(obs), {"is_success": False}
 
     def step(self, action):
         import torch
@@ -136,15 +207,48 @@ class RobolabEnv(gym.Env):
         act = torch.as_tensor(np.asarray(action, dtype=np.float32), device=self._isaac.device)
         if act.ndim == 1:
             act = act[None]
-        obs, reward, terminated, truncated, _info = self._isaac.step(act)
-        # terminated is the success term; truncated is the time limit.
-        success = bool(np.asarray(terminated.detach().cpu()).reshape(-1)[0])
-        timed_out = bool(np.asarray(truncated.detach().cpu()).reshape(-1)[0])
-        step_reward = float(np.asarray(reward.detach().cpu()).reshape(-1)[0])
-        return _pack(obs), step_reward, success, timed_out, {"is_success": success}
+        obs, reward, _terminated, _truncated, _info = self._isaac.step(act)
+        self._steps += 1
+        self._subtask_info = self._current_subtask_info()
+        # RoboLab freezes an env when it terminates (success term or time limit)
+        # and records success/step itself; a <=2-step physics artifact is reset
+        # instead of frozen. End the HUD episode exactly when RoboLab would.
+        done = bool(getattr(self._isaac, "all_terminated", False))
+        success = False
+        if done:
+            self._env_result = self._isaac.get_env_results()[0]
+            success = bool(self._env_result.get("success"))
+        step_reward = float(np.asarray(_to_numpy(reward)).reshape(-1)[0])
+        info = {"is_success": success}
+        return pack_observation(obs), step_reward, done and success, done and not success, info
+
+    def report(self) -> dict[str, Any]:
+        events = None
+        try:
+            from robolab.core.logging.results import get_all_env_events
+
+            per_env = get_all_env_events(self._isaac)
+            events = per_env[0] if per_env else None
+        except Exception:
+            events = None
+        return episode_report(
+            env_result=self._env_result,
+            subtask_info=self._subtask_info,
+            events=events,
+            steps_executed=self._steps,
+            max_episode_length=_int_or_none(getattr(self._isaac, "max_episode_length", None)),
+            task_name=self.task_name,
+            instruction=self.task_description,
+        )
 
     def close(self):
         self._isaac.close()
+
+    def _current_subtask_info(self) -> dict[str, Any] | None:
+        from robolab.core.logging.results import get_all_env_subtask_infos
+
+        infos = get_all_env_subtask_infos(self._isaac)
+        return dict(infos[0]) if infos else None
 
     @staticmethod
     def _wait_until_playing():
@@ -158,8 +262,37 @@ class RobolabEnv(gym.Env):
             app.update()
 
 
-def make_env(task_name: str = "RubiksCubeTask", instruction_type: str = "default"):
-    """One RoboLab task. ``GymBridge`` rebuilds when the task or instruction changes."""
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+class RobolabBridge(GymBridge):
+    """``GymBridge`` that grades with RoboLab's own verdict and tolerates slow policies.
+
+    The default barrier fails a slot that is silent for 30 s. A cloud policy's
+    first chunk (and any network stall) can take longer, and the sim must wait
+    for actions rather than drop the episode, so allow five minutes.
+    """
+
+    step_timeout = 300.0
+
+    def result_slots(self) -> list[dict[str, Any]]:
+        slots = super().result_slots()
+        report = getattr(self._unwrapped, "report", None)
+        if report is not None and slots:
+            slots[0].update(report())
+        return slots
+
+
+def make_env(
+    task_name: str = "BananaInBowlTask",
+    instruction_type: str = "default",
+    scene_seed: int = 0,
+):
+    """One RoboLab task. ``GymBridge`` rebuilds when any of these args change."""
     _boot()
     from robolab.core.environments.runtime import create_env
 
@@ -169,10 +302,12 @@ def make_env(task_name: str = "RubiksCubeTask", instruction_type: str = "default
         device=os.environ.get("ROBOLAB_DEVICE", "cuda:0"),
         num_envs=1,
         use_fabric=True,
-        seed=0,
+        # Dreamscale's RoboLab runner binds create_env's seed to --scene-seed (0).
+        seed=int(scene_seed),
         instruction_type=instruction_type,
+        policy=POLICY_LABEL,
     )
     text = getattr(cfg, "instruction", "")
     if isinstance(text, dict):
         text = text.get(instruction_type) or text.get("default") or next(iter(text.values()), "")
-    return RobolabEnv(isaac, str(text))
+    return RobolabEnv(isaac, str(text), task_name=task_name)

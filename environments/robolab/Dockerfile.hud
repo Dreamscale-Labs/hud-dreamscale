@@ -28,16 +28,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY pyproject.toml ./
+# The RoboLab revision Dreamscale's Cosmos / FLUX DROID contracts pin
+# (dropbear_transport.cosmos3.ROBOLAB_REVISION). Task classes, cameras and
+# episode lengths in tasks.json are taken from this commit.
+ARG ROBOLAB_REVISION=ad45d4f974725d020f82c2b0d77d78533aeba2b3
 # One venv: HUD first, then RoboLab's Isaac extra into the same environment.
+# --no-dev keeps the local agent/test group (dreamscale SDK, modal, pytest) out.
 RUN pip install --no-cache-dir uv && uv sync --no-dev \
-    && git clone --depth 1 https://github.com/NVlabs/RoboLab.git /opt/robolab \
-    && cd /opt/robolab && git lfs pull \
+    && git clone https://github.com/NVlabs/RoboLab.git /opt/robolab \
+    && cd /opt/robolab && git checkout "${ROBOLAB_REVISION}" && git lfs pull \
     && UV_PROJECT_ENVIRONMENT=/app/.venv uv sync --extra isaac50 --inexact
 # Isaac's sync downgrades packages hud already installed (typing_extensions
 # without TypeForm, cryptography without ML-KEM). Re-apply the HUD env on top
 # without removing Isaac's extra packages.
 RUN uv sync --no-dev --inexact
-COPY env.py sim.py contract.json ./
+COPY env.py sim.py robolab_tasks.py tasks.json contract.json ./
 ENV PYTHONPATH=/opt/robolab
 
 EXPOSE 8765
