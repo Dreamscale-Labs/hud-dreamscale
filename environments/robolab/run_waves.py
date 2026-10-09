@@ -83,6 +83,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--image", default=IMAGE, help="modal://im-... (default: $ROBOLAB_MODAL_IMAGE)"
     )
     parser.add_argument("--build-image", action="store_true", help="build Dockerfile.hud on Modal")
+    parser.add_argument(
+        "--sandbox-cloud", default="oci",
+        help="Modal cloud for simulator sandboxes ('' to let Modal choose); see pin_sandbox_cloud",
+    )
     parser.add_argument("--dreamscale-home", type=Path, help="use this DREAMSCALE_HOME as-is")
     parser.add_argument("--job-name", default=None)
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
@@ -154,6 +158,31 @@ def _restore_env(name: str, value: str | None) -> None:
 
 
 # ── Modal placement with timing ──────────────────────────────────────────────
+
+
+def pin_sandbox_cloud(cloud: str | None) -> None:
+    """Place every simulator sandbox on one Modal cloud.
+
+    Isaac Sim 5.0 needs the 580 NVIDIA driver. On 2026-10-09 Modal's AWS L40S hosts
+    ran 610.57.04 and crashed Kit at RTX startup, while OCI L40S hosts ran 580.95.05.
+    ``ModalRuntime`` has no placement option, so wrap ``Sandbox.create.aio``.
+    """
+    if not cloud:
+        return
+    import modal
+
+    original = modal.Sandbox.create
+
+    class _PinnedCreate:
+        def __call__(self, *args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("cloud", cloud)
+            return original(*args, **kwargs)
+
+        async def aio(self, *args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("cloud", cloud)
+            return await original.aio(*args, **kwargs)
+
+    modal.Sandbox.create = _PinnedCreate()
 
 
 def make_runtime(image: str, *, build: bool):
@@ -306,6 +335,7 @@ async def run_wave(args: argparse.Namespace) -> dict[str, Any]:
         local_video=not args.no_local_video,
         max_steps_cap=args.max_steps,
     )
+    pin_sandbox_cloud(args.sandbox_cloud)
     runtime = make_runtime(args.image, build=args.build_image)
     name = args.job_name or (
         f"RoboLab DROID {model} [{args.env}] {len(args.task_names)} tasks x "
@@ -323,6 +353,7 @@ async def run_wave(args: argparse.Namespace) -> dict[str, Any]:
         "scene_seed": args.scene_seed,
         "max_steps_cap": args.max_steps,
         "image": "built:Dockerfile.hud" if args.build_image else args.image,
+        "sandbox_cloud": args.sandbox_cloud or None,
         "robolab_revision": task_set()["robolab_revision"],
         "keep_warm_s": None if model == HOLD_MODEL else args.keep_warm,
         "sdk_connect": None if model == HOLD_MODEL else policy.connect_kwargs(),
