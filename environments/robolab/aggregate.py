@@ -23,6 +23,11 @@ EPISODE_FIELDS = ("task_name", "episode", "success", "robolab_score", "steps", "
                   "trace_url", "session_id", "run", "local_video", "error")
 
 
+def valid(episode: dict) -> bool:
+    """Graded and actually rolled out: an agent error before the first step is infra."""
+    return bool(episode.get("graded")) and not (episode.get("error") and not episode.get("steps"))
+
+
 def wilson(successes: int, n: int, z: float = 1.96):
     if not n:
         return None
@@ -65,10 +70,10 @@ def main() -> None:
         for episode in summary["episodes"]:
             key = (episode["task_name"], episode["episode"])
             current = chosen.get(key)
-            if current is None or (episode.get("graded") and not current.get("graded")):
+            if current is None or (valid(episode) and not valid(current)):
                 chosen[key] = {**episode, "run": str(run)}
     episodes = sorted(chosen.values(), key=lambda e: (e["task_name"], e["episode"]))
-    graded = [e for e in episodes if e.get("graded")]
+    graded = [e for e in episodes if valid(e)]
     per_task = {}
     for e in graded:
         row = per_task.setdefault(e["task_name"], {"episodes": 0, "successes": 0, "steps": []})
@@ -107,7 +112,7 @@ def main() -> None:
         "episodes_graded": len(graded),
         "unresolved_infra_failures": [
             {"task_name": e["task_name"], "episode": e["episode"], "error": e.get("error")}
-            for e in episodes if not e.get("graded")
+            for e in episodes if not valid(e)
         ],
         "successes": successes,
         "success_rate": successes / len(graded) if graded else None,
