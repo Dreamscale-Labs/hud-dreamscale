@@ -1,0 +1,70 @@
+{
+  "source": "Dreamscale mvp/infra/benchmarks/cosmos3_tasks.json (schema 1); episode_s is RoboLab's own per-task episode length",
+  "robolab_revision": "ad45d4f974725d020f82c2b0d77d78533aeba2b3",
+  "instruction_type": "default",
+  "scene_seed": 0,
+  "control_hz": 15,
+  "action_horizon": 32,
+  "tasks": [
+    {
+      "task_name": "BananaInBowlTask",
+      "instruction": "Pick up the banana and place it in the bowl",
+      "episode_s": 50,
+      "difficulty_label": "simple"
+    },
+    {
+      "task_name": "BowlStackingLeftOnRightTask",
+      "instruction": "Stack the left bowl on the right bowl",
+      "episode_s": 20,
+      "difficulty_label": "simple"
+    },
+    {
+      "task_name": "PickDrillTask",
+      "instruction": "Pick up the cordless drill.",
+      "episode_s": 40,
+      "difficulty_label": "simple"
+    },
+    {
+      "task_name": "MouseOnKeyboardTask",
+      "instruction": "Put the computer mouse on the keyboard",
+      "episode_s": 60,
+      "difficulty_label": "simple"
+    },
+    {
+      "task_name": "MarkerInMugTask",
+      "instruction": "Put the whiteboard marker in the mug",
+      "episode_s": 40,
+      "difficulty_label": "moderate"
+    },
+    {
+      "task_name": "PinkSpoonInPotTask",
+      "instruction": "Put the pink spaghetti spoon in the pot",
+      "episode_s": 60,
+      "difficulty_label": "moderate"
+    },
+    {
+      "task_name": "ReorientRedMugTask",
+      "instruction": "Put the red mug upright so that the opening is facing upwards.",
+      "episode_s": 60,
+      "difficulty_label": "moderate"
+    },
+    {
+      "task_name": "RubiksCubeBehindBowlTask",
+      "instruction": "Put the rubiks cube behind the bowl",
+      "episode_s": 30,
+      "difficulty_label": "moderate"
+    },
+    {
+      "task_name": "BlockStackingOrderAgnosticTask",
+      "instruction": "Stack the blocks into a tower",
+      "episode_s": 90,
+      "difficulty_label": "complex"
+    },
+    {
+      "task_name": "BlackItemsInBinTask",
+      "instruction": "Put the black items in the grey bin",
+      "episode_s": 120,
+      "difficulty_label": "complex"
+    }
+  ]
+}

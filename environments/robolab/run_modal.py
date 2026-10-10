@@ -27,7 +27,7 @@ MODAL_TOKEN_ID = ""
 MODAL_TOKEN_SECRET = ""
 
 # Image from `hud deploy --runtime modal`. Blank builds Dockerfile.hud instead.
-IMAGE = "modal://im-WYmDQyY7iIcN7dyx204Ww2"
+IMAGE = "modal://im-p0jN9zrruXkRAg7r9Uql1g"
 
 HERE = Path(__file__).parent
 
@@ -92,7 +92,7 @@ async def main() -> None:
     task = Task(
         env="dreamscale-robolab",
         id="episode",
-        args={"task_name": "RubiksCubeTask", "seed": 0, "instruction_type": "default"},
+        args={"task_name": "BananaInBowlTask", "episode": 0, "instruction_type": "default"},
     )
     print("[modal] launching RoboLab sandbox", flush=True)
     # Must exceed runtime.json run_timeout_s (3600). The hold episode is much shorter.

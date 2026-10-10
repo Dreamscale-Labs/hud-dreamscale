@@ -7,5 +7,32 @@ dependencies = [
   "hud[robot] @ git+https://github.com/hud-evals/hud-python@0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
 ]
 
+# The local side only: the wave runner, the Dreamscale agent and their tests.
+# Dockerfile.hud runs `uv sync --no-dev`, so none of this enters the sim image.
+# The repo root pins an older SDK for LIBERO; this project is kept separate so
+# that pin does not move. FLUX 3 Action DROID needs no client-side contract
+# entry (the server is authoritative); the agent validates 32x8 itself.
+[dependency-groups]
+dev = [
+  "dreamscale==0.1.0a58",
+  "hud[robot,modal] @ git+https://github.com/hud-evals/hud-python@0b63b4d3b9acb6d095e0886e18b2c905219e1e5a",
+  "python-dotenv>=1",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=1,<2",
+  "ruff>=0.12",
+]
+
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
